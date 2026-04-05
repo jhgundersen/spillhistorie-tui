@@ -19,7 +19,18 @@
       "Bash(git commit -m ':*)",
       "Bash(git branch:*)",
       "Bash(git remote:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git config:*)",
+      "Bash(git commit:*)",
+      "Bash(pacman -Q chafa mpv)",
+      "Bash(pacman -Q chafa)",
+      "Bash(curl -s \"https://spillhistorie.no/2026/04/03/lord-helmet-beaeret-over-hevnscroller/\")",
+      "Bash(curl -s \"https://spillhistorie.no\")",
+      "Bash(curl -s \"https://spillhistorie.no/feed/?cat=diskettkameratene\")",
+      "Bash(python3 -c ':*)",
+      "Bash(curl -s \"https://spillhistorie.no/2025/12/26/diskettkameratene-snakker-om-coverdisker/\")",
+      "Bash(curl -s \"https://share.transistor.fm/e/7fabe402\")",
+      "Bash(sudo pacman:*)"
     ]
   }
 }
