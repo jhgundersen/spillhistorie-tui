@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:spillhistorie.no)",
+      "Bash(gh auth:*)",
+      "Bash(git init:*)",
+      "Bash(go get:*)",
+      "Read(//usr/local/go/**)",
+      "Read(//home/jonh/go/**)",
+      "Read(//home/jonh/**)",
+      "Bash(mise list:*)",
+      "Bash(pacman -Q go)",
+      "Read(//usr/lib/**)",
+      "Bash(mise install:*)",
+      "Bash(mise use:*)",
+      "Bash(mise exec:*)",
+      "Bash(gh repo:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}
