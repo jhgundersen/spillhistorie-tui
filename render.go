@@ -426,7 +426,7 @@ func chafaRender(src, alt string, width int) (string, error) {
 
 	var chafaStderr strings.Builder
 	cmd := exec.Command(chafaPath,
-		"--size", fmt.Sprintf("%dx0", imgW),
+		"--size", fmt.Sprintf("%d", imgW),
 		"--format", "symbol",
 		"--symbols", "block+border+space",
 		tmp.Name(),
