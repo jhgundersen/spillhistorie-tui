@@ -424,13 +424,17 @@ func chafaRender(src, alt string, width int) (string, error) {
 		imgW = 10
 	}
 
-	out, err := exec.Command(chafaPath,
+	var chafaStderr strings.Builder
+	cmd := exec.Command(chafaPath,
 		"--size", fmt.Sprintf("%dx0", imgW),
-		"--format", "symbols",
+		"--format", "symbol",
 		"--symbols", "block+border+space",
 		tmp.Name(),
-	).Output()
+	)
+	cmd.Stderr = &chafaStderr
+	out, err := cmd.Output()
 	if err != nil {
+		imgLog("chafa stderr: %s", chafaStderr.String())
 		return "", err
 	}
 
