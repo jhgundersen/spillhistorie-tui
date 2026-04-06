@@ -190,19 +190,14 @@ func fetchArticle(a article) tea.Cmd {
 		}
 
 		contentImages := ExtractArticleImages(parsed.Content)
-		bodyImages := ExtractPageBodyImages(string(pageBytes))
 
 		// Quiz articles (tagged "quiz" or "fredagsquiz" in RSS) show images
 		// inline at their natural positions. All other articles use the gallery.
-		// Fall back to raw body images if readability stripped most of them.
 		var images []ImageRef
 		var inlineImgs []ImageRef
-		switch {
-		case isQuizArticle(a.categories):
+		if isQuizArticle(a.categories) {
 			inlineImgs = ExtractInlineImages(parsed.Content)
-		case len(bodyImages) >= 3 && len(bodyImages) > len(contentImages)+2:
-			inlineImgs = bodyImages
-		default:
+		} else {
 			images = contentImages
 		}
 

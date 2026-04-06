@@ -4,6 +4,8 @@ A terminal client for [spillhistorie.no](https://spillhistorie.no) — *Litt ret
 
 Browse articles and listen to podcasts about gaming history directly in your terminal.
 
+![Screenshot](screenshot.png)
+
 ## Install
 
 ```sh
