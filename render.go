@@ -209,8 +209,9 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 	case "img":
 		src := bestImgSrc(n)
 		alt := elAttr(n, "alt")
-		if rendered := renderImage(src, alt, width); rendered != "" {
-			buf.WriteString("\n" + rendered + "\n")
+		imgW := max(width/4, 10)
+		if rendered := renderImage(src, alt, imgW); rendered != "" {
+			buf.WriteString("\n" + rightAlignBlock(rendered, width) + "\n")
 		}
 
 	case "figure":
@@ -443,6 +444,27 @@ func chafaRender(src, alt string, width int) (string, error) {
 		result += "\n" + captionStyle.Render("  "+alt)
 	}
 	return result, nil
+}
+
+// rightAlignBlock pads each line of a block with spaces on the left so the
+// block appears flush with the right edge of totalWidth.
+func rightAlignBlock(content string, totalWidth int) string {
+	lines := strings.Split(content, "\n")
+	maxW := 0
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > maxW {
+			maxW = w
+		}
+	}
+	pad := totalWidth - maxW
+	if pad <= 0 {
+		return content
+	}
+	padStr := strings.Repeat(" ", pad)
+	for i, l := range lines {
+		lines[i] = padStr + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
