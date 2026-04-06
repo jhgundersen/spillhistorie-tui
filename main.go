@@ -21,6 +21,9 @@ import (
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
+// version is set at build time via -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 const (
 	rssURL  = "https://spillhistorie.no/feed/"
 	kofiURL = "https://ko-fi.com/joachimfroholt"
