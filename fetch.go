@@ -33,10 +33,11 @@ func fetchRSS() tea.Msg {
 			published = item.PublishedParsed.Format("02 Jan 2006")
 		}
 		articles = append(articles, article{
-			title:     item.Title,
-			link:      item.Link,
-			author:    author,
-			published: published,
+			title:      item.Title,
+			link:       item.Link,
+			author:     author,
+			published:  published,
+			categories: item.Categories,
 		})
 	}
 	return rssFetchedMsg(articles)
@@ -150,15 +151,27 @@ func parseDuration(s string) int {
 
 // ─── article reader ───────────────────────────────────────────────────────────
 
-func fetchArticle(articleURL string) tea.Cmd {
+// isQuizArticle returns true when the article's RSS categories indicate it is
+// a quiz (contains "quiz" or "fredagsquiz", case-insensitive).
+func isQuizArticle(categories []string) bool {
+	for _, c := range categories {
+		lc := strings.ToLower(c)
+		if lc == "quiz" || lc == "fredagsquiz" {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchArticle(a article) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := http.Get(articleURL)
+		resp, err := http.Get(a.link)
 		if err != nil {
 			return errMsg{err}
 		}
 		defer resp.Body.Close()
 
-		parsedURL, err := url.ParseRequestURI(articleURL)
+		parsedURL, err := url.ParseRequestURI(a.link)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -176,24 +189,28 @@ func fetchArticle(articleURL string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		// Images readability kept (filtered, usually correct for normal articles)
 		contentImages := ExtractArticleImages(parsed.Content)
+		bodyImages := ExtractPageBodyImages(string(pageBytes))
 
-		// For quiz/gallery articles, readability strips all images.
-		// Extract from the raw article area instead and show inline.
+		// Quiz articles (tagged "quiz" or "fredagsquiz" in RSS) show images
+		// inline at their natural positions. All other articles use the gallery.
+		// Fall back to raw body images if readability stripped most of them.
+		var images []ImageRef
 		var inlineImgs []ImageRef
-		if len(contentImages) == 0 {
-			bodyImages := ExtractPageBodyImages(string(pageBytes))
-			if len(bodyImages) >= 3 {
-				inlineImgs = bodyImages
-			}
+		switch {
+		case isQuizArticle(a.categories):
+			inlineImgs = ExtractInlineImages(parsed.Content)
+		case len(bodyImages) >= 3 && len(bodyImages) > len(contentImages)+2:
+			inlineImgs = bodyImages
+		default:
+			images = contentImages
 		}
 
 		return articleFetchedMsg{
 			title:      parsed.Title,
 			rawHTML:    parsed.Content,
 			imageURL:   parsed.Image,
-			images:     contentImages,
+			images:     images,
 			inlineImgs: inlineImgs,
 		}
 	}

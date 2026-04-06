@@ -88,13 +88,13 @@ The app works without these, but they unlock extra features:
 
 ### Build from source
 
-Requires [Go](https://go.dev) 1.22+.
+Requires [Go](https://go.dev) 1.22+ and `make`.
 
 ```sh
 git clone https://github.com/jhgundersen/spillhistorie-tui
 cd spillhistorie-tui
-go build -o spillhistorie .
-./spillhistorie
+make          # builds ./spillhistorie
+make install  # installs to /usr/local/bin  (PREFIX=/usr/local/bin to override)
 ```
 
 ### Install via Go

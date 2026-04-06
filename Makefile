@@ -1,7 +1,9 @@
 BIN     := spillhistorie
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
+PREFIX  ?= /usr/local
 
+.DEFAULT_GOAL := build
 .PHONY: build install uninstall run clean release
 
 build:
@@ -21,6 +23,7 @@ clean:
 	rm -rf dist/
 
 release:
+	@mkdir -p dist
 	@for target in \
 		linux/amd64 linux/arm64 \
 		darwin/amd64 darwin/arm64 \

@@ -98,8 +98,14 @@ func imgLog(format string, args ...interface{}) {
 
 // ─── entry point ─────────────────────────────────────────────────────────────
 
+// inlineImgMarker is written into the rendered text at each <img> position when
+// inline=true. rebuildArticleContent splits on it to splice in the real images.
+const inlineImgMarker = "\x00IMG\x00"
+
 // renderHTML converts an HTML fragment (from go-readability) to terminal text.
-func renderHTML(content string, width int) string {
+// When inline is true, <img> elements emit inlineImgMarker so the caller can
+// splice pre-rendered images in at the correct positions.
+func renderHTML(content string, width int, inline bool) string {
 	doc, err := html.Parse(strings.NewReader(content))
 	if err != nil {
 		return content
@@ -111,7 +117,7 @@ func renderHTML(content string, width int) string {
 	}
 
 	var buf strings.Builder
-	renderBlockChildren(body, &buf, width)
+	renderBlockChildren(body, &buf, width, inline)
 
 	result := strings.TrimSpace(buf.String())
 	// Collapse runs of 3+ newlines to 2
@@ -123,13 +129,13 @@ func renderHTML(content string, width int) string {
 
 // ─── block rendering ─────────────────────────────────────────────────────────
 
-func renderBlockChildren(n *html.Node, buf *strings.Builder, width int) {
+func renderBlockChildren(n *html.Node, buf *strings.Builder, width int, inline bool) {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		renderBlock(c, buf, width)
+		renderBlock(c, buf, width, inline)
 	}
 }
 
-func renderBlock(n *html.Node, buf *strings.Builder, width int) {
+func renderBlock(n *html.Node, buf *strings.Builder, width int, inline bool) {
 	if n.Type == html.TextNode {
 		if t := strings.TrimSpace(n.Data); t != "" {
 			buf.WriteString(t + "\n")
@@ -137,7 +143,7 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 		return
 	}
 	if n.Type != html.ElementNode {
-		renderBlockChildren(n, buf, width)
+		renderBlockChildren(n, buf, width, inline)
 		return
 	}
 
@@ -166,6 +172,12 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 		}
 
 	case "p":
+		// An image-only <p> (pattern: <p><a?><img></a?></p>) should emit a
+		// block-level marker in inline mode, not be passed to renderInline.
+		if inline && isImageOnlyParagraph(n) {
+			buf.WriteString(inlineImgMarker + "\n")
+			return
+		}
 		if t := strings.TrimSpace(renderInline(n, width)); t != "" {
 			buf.WriteString(t + "\n\n")
 		}
@@ -194,7 +206,7 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 
 	case "blockquote":
 		var inner strings.Builder
-		renderBlockChildren(n, &inner, width-4)
+		renderBlockChildren(n, &inner, width-4, inline)
 		if t := strings.TrimSpace(inner.String()); t != "" {
 			buf.WriteString("\n" + blockquoteStyle.Width(width-4).Render(t) + "\n\n")
 		}
@@ -206,13 +218,19 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 			buf.WriteString("\n" + codeBlockStyle.Width(width-2).Render(t) + "\n\n")
 		}
 
-	case "img", "figcaption":
-		// Images and captions are suppressed from the body; view them via the
-		// gallery popup (press i in article view).
+	case "img":
+		if inline {
+			// Emit a marker; rebuildArticleContent will splice in the real image.
+			buf.WriteString(inlineImgMarker + "\n")
+		}
+		// In gallery mode img is suppressed (viewed via i key).
+		return
+
+	case "figcaption":
 		return
 
 	case "figure":
-		renderBlockChildren(n, buf, width)
+		renderBlockChildren(n, buf, width, inline)
 
 	case "hr":
 		line := lipgloss.NewStyle().
@@ -225,7 +243,7 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 
 	default:
 		// div, section, article, main, etc.
-		renderBlockChildren(n, buf, width)
+		renderBlockChildren(n, buf, width, inline)
 	}
 }
 
@@ -532,6 +550,84 @@ func ExtractArticleImages(content string) []ImageRef {
 		}
 	}
 	walk(doc)
+	return images
+}
+
+// isImageOnlyParagraph returns true when a <p> contains an <img> but no
+// visible text — the WordPress pattern for inline quiz/gallery images.
+func isImageOnlyParagraph(n *html.Node) bool {
+	return strings.TrimSpace(nodeText(n)) == "" && hasDescendantImg(n)
+}
+
+func hasDescendantImg(n *html.Node) bool {
+	if n.Type == html.ElementNode && n.Data == "img" {
+		return true
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if hasDescendantImg(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractInlineImages returns images in the same order and count as the
+// inlineImgMarker tokens emitted by renderHTML(..., inline=true).
+// It must stay in sync with the renderBlock logic.
+func ExtractInlineImages(content string) []ImageRef {
+	doc, err := html.Parse(strings.NewReader(content))
+	if err != nil {
+		return nil
+	}
+	body := findEl(doc, "body")
+	if body == nil {
+		body = doc
+	}
+
+	var images []ImageRef
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type != html.ElementNode {
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+			return
+		}
+		switch n.Data {
+		case "script", "style", "nav", "header", "footer", "noscript", "aside":
+			return
+		case "p":
+			if isImageOnlyParagraph(n) {
+				// Collect the single img inside this paragraph
+				var findImg func(*html.Node)
+				findImg = func(m *html.Node) {
+					if m.Type == html.ElementNode && m.Data == "img" {
+						if src := bestImgSrc(m); src != "" {
+							images = append(images, ImageRef{Src: src, Alt: elAttr(m, "alt")})
+						}
+						return
+					}
+					for c := m.FirstChild; c != nil; c = c.NextSibling {
+						findImg(c)
+					}
+				}
+				findImg(n)
+				return // don't recurse further into this paragraph
+			}
+			// paragraph with real text — skip any imgs inside it
+			return
+		case "img":
+			// block-level img (e.g. directly in <figure> or <div>)
+			if src := bestImgSrc(n); src != "" {
+				images = append(images, ImageRef{Src: src, Alt: elAttr(n, "alt")})
+			}
+		default:
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				walk(c)
+			}
+		}
+	}
+	walk(body)
 	return images
 }
 

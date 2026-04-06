@@ -118,10 +118,11 @@ const (
 // ─── data types ───────────────────────────────────────────────────────────────
 
 type article struct {
-	title     string
-	link      string
-	author    string
-	published string
+	title      string
+	link       string
+	author     string
+	published  string
+	categories []string
 }
 
 func (a article) Title() string       { return a.title }
@@ -473,7 +474,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if item, ok := m.articleList.SelectedItem().(article); ok {
 						m.currentArticle = item
 						m.state = stateArticleLoading
-						return m, tea.Batch(m.spinner.Tick, fetchArticle(item.link))
+						return m, tea.Batch(m.spinner.Tick, fetchArticle(item))
 					}
 				case tabPodcasts:
 					if item, ok := m.podcastList.SelectedItem().(podcastEpisode); ok {
@@ -671,8 +672,8 @@ func (m *model) resize() {
 	m.articleList.SetSize(m.width-h, listH)
 	m.podcastList.SetSize(m.width-h, listH)
 
-	// title(1) + meta(1) + 2×sep(2) + help(1) + spacing(2) = 7
-	vpH := m.height - v - 7 - playerH
+	// headerBar(1) + title(1) + meta(1) + 2×sep(2) + help(1) + spacing(2) = 8
+	vpH := m.height - v - 8 - playerH
 	if vpH < 5 {
 		vpH = 5
 	}
@@ -686,31 +687,52 @@ func (m *model) resize() {
 }
 
 // rebuildArticleContent re-renders stored HTML at current viewport width.
+// For inline-image articles (quizzes etc.) it splices rendered images into the
+// positions where <img> tags appeared in the original HTML.
 func (m *model) rebuildArticleContent() {
-	var parts []string
+	var sb strings.Builder
+
 	if m.currentArticleImage != "" {
 		if img := renderImage(m.currentArticleImage, "", m.viewport.Width); img != "" {
-			parts = append(parts, img)
+			sb.WriteString(img)
+			sb.WriteString("\n\n")
 		}
 	}
+
 	if m.currentHTML != "" {
-		parts = append(parts, renderHTML(m.currentHTML, m.viewport.Width))
-	}
-	// Inline images for quiz/visual articles — show each as it loads
-	for i, ref := range m.inlineImgs {
-		if rendered, ok := m.inlineImgCache[i]; ok {
-			parts = append(parts, rendered)
-		} else {
-			placeholder := imgFallbackStyle.Render(
-				fmt.Sprintf("[Laster bilde %d/%d…]", i+1, len(m.inlineImgs)))
-			if ref.Alt != "" {
-				placeholder += "\n" + captionStyle.Render(ref.Alt)
+		inline := len(m.inlineImgs) > 0
+		text := renderHTML(m.currentHTML, m.viewport.Width, inline)
+
+		if inline {
+			// Split on the marker emitted for each <img> and splice in images.
+			segments := strings.Split(text, inlineImgMarker)
+			for i, seg := range segments {
+				if t := strings.TrimSpace(seg); t != "" {
+					sb.WriteString(t)
+					sb.WriteString("\n\n")
+				}
+				if i < len(m.inlineImgs) {
+					ref := m.inlineImgs[i]
+					if rendered, ok := m.inlineImgCache[i]; ok {
+						sb.WriteString(rendered)
+					} else {
+						placeholder := imgFallbackStyle.Render(
+							fmt.Sprintf("[Laster bilde %d/%d…]", i+1, len(m.inlineImgs)))
+						if ref.Alt != "" {
+							placeholder += "\n" + captionStyle.Render(ref.Alt)
+						}
+						sb.WriteString(placeholder)
+					}
+					sb.WriteString("\n\n")
+				}
 			}
-			parts = append(parts, placeholder)
+		} else {
+			sb.WriteString(text)
 		}
 	}
-	if len(parts) > 0 {
-		m.viewport.SetContent(strings.Join(parts, "\n\n"))
+
+	if sb.Len() > 0 {
+		m.viewport.SetContent(strings.TrimSpace(sb.String()))
 	}
 }
 
@@ -759,10 +781,16 @@ func (m model) browseView() string {
 	return docStyle.Render(strings.Join(parts, "\n"))
 }
 
+func (m model) articleHeaderBar() string {
+	back := inactiveTabStyle.Render("← Artikler")
+	return rightAlign(back, m.kofiMsg(), m.width-4)
+}
+
 func (m model) articleView() string {
 	inner := m.width - 4
 	sep := strings.Repeat("─", max(0, inner))
 	lines := []string{
+		m.articleHeaderBar(),
 		articleTitleStyle.Render(m.currentArticle.title),
 		metaStyle.Render(m.currentArticle.author + "  ·  " + m.currentArticle.published),
 		sep,
@@ -857,6 +885,20 @@ func fetchBodyImage(src, alt string, termWidth, termHeight int) tea.Cmd {
 	}
 }
 
+// rightAlign places left flush-left and right flush-right within width,
+// padding with spaces. If there is not enough room for both, left wins.
+func rightAlign(left, right string, width int) string {
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+func (m model) kofiMsg() string {
+	return kofiStyle.Render("♥  Støtt spillhistorie  ·  " + kofiURL + "  ♥")
+}
+
 func (m model) tabBar() string {
 	var art, pod string
 	if m.tab == tabArticles {
@@ -867,14 +909,7 @@ func (m model) tabBar() string {
 		pod = activeTabStyle.Render("Podkast")
 	}
 	tabs := lipgloss.JoinHorizontal(lipgloss.Top, art, pod)
-
-	inner := m.width - 4
-	kofi := kofiStyle.Render("♥  Støtt spillhistorie  ·  " + kofiURL + "  ♥")
-	gap := inner - lipgloss.Width(tabs) - lipgloss.Width(kofi)
-	if gap < 1 {
-		return tabs
-	}
-	return tabs + strings.Repeat(" ", gap) + kofi
+	return rightAlign(tabs, m.kofiMsg(), m.width-4)
 }
 
 // playerBar renders a single-line footer player with progress bar.

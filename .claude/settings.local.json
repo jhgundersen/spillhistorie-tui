@@ -48,7 +48,10 @@
       "Bash(curl -s \"https://spillhistorie.no/2026/04/03/langfredagsquiz-kjenner-du-disse-spillene/\")",
       "Bash(python3:*)",
       "Bash(grep -rn '\"#' /home/jonh/jonh.no/spillhistorie-tui/*.go)",
-      "Bash(make build:*)"
+      "Bash(make build:*)",
+      "Bash(curl -fsSL \"https://spillhistorie.no/2026/04/03/langfredagsquiz-kjenner-du-disse-spillene/\")",
+      "Bash(curl -fsSL \"https://spillhistorie.no/feed/\")",
+      "Bash(curl -fsSL \"https://spillhistorie.no/2026/04/03/amiga-en-flipperspillodysse-pinball-magic/\")"
     ]
   }
 }
