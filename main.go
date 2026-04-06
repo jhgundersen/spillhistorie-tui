@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -156,8 +157,21 @@ type player struct {
 	title    string
 	series   string
 	done     chan struct{}
-	pos      float64 // seconds, from IPC poll
+	pos      float64 // protected by posSync; use getPos/setPos
+	posSync  sync.Mutex
 	duration float64 // seconds, from RSS
+}
+
+func (p *player) getPos() float64 {
+	p.posSync.Lock()
+	defer p.posSync.Unlock()
+	return p.pos
+}
+
+func (p *player) setPos(v float64) {
+	p.posSync.Lock()
+	p.pos = v
+	p.posSync.Unlock()
 }
 
 func (p *player) isActive() bool { return p.status != playerStopped }
@@ -182,10 +196,11 @@ func (p *player) play(audioURL, title, series string, duration, startPos float64
 	p.title = title
 	p.series = series
 	p.duration = duration
-	p.pos = startPos
+	p.setPos(startPos)
 	p.status = playerPlaying
 	p.done = done
 	go func() { cmd.Wait(); close(done) }()
+	go p.trackPos()
 	return nil
 }
 
@@ -231,13 +246,14 @@ func (p *player) togglePause() {
 
 // stop halts playback and saves position for later resuming.
 func (p *player) stop() {
-	if p.isActive() && p.pos > 10 && (p.duration <= 0 || p.pos < p.duration-30) {
+	pos := p.getPos()
+	if p.isActive() && pos > 10 && (p.duration <= 0 || pos < p.duration-30) {
 		saveResume(&resumeState{
 			AudioURL: p.audioURL,
 			Title:    p.title,
 			Series:   p.series,
 			Duration: p.duration,
-			Pos:      p.pos,
+			Pos:      pos,
 		})
 	}
 	p.kill()
@@ -265,7 +281,7 @@ func (p *player) kill() {
 	p.audioURL = ""
 	p.title = ""
 	p.series = ""
-	p.pos = 0
+	p.setPos(0)
 	p.duration = 0
 	os.Remove(mpvSock)
 }
@@ -285,31 +301,41 @@ func (p *player) seek(delta float64) {
 	}()
 }
 
-// queryMPVPos queries the mpv IPC socket for the current playback position.
-func queryMPVPos() float64 {
-	conn, err := net.DialTimeout("unix", mpvSock, 100*time.Millisecond)
-	if err != nil {
-		return -1
+// trackPos connects to the mpv IPC socket, subscribes to time-pos property
+// changes, and updates p.pos in real-time. Runs as a goroutine until mpv exits.
+func (p *player) trackPos() {
+	// Wait up to 3 s for mpv to create the socket
+	var conn net.Conn
+	for i := 0; i < 30; i++ {
+		if !p.isActive() {
+			return
+		}
+		var err error
+		conn, err = net.DialTimeout("unix", mpvSock, 100*time.Millisecond)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if conn == nil {
+		return
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(300 * time.Millisecond))
-	fmt.Fprintf(conn, "{\"command\":[\"get_property\",\"time-pos\"],\"request_id\":1}\n")
+
+	fmt.Fprintf(conn, "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n")
+
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, `"request_id":1`) {
-			continue
-		}
-		var resp struct {
+		var event struct {
+			Event string   `json:"event"`
+			ID    int      `json:"id"`
 			Data  *float64 `json:"data"`
-			Error string   `json:"error"`
 		}
-		if json.Unmarshal([]byte(line), &resp) == nil && resp.Error == "success" && resp.Data != nil {
-			return *resp.Data
+		if json.Unmarshal([]byte(scanner.Text()), &event) == nil &&
+			event.Event == "property-change" && event.ID == 1 && event.Data != nil {
+			p.setPos(*event.Data)
 		}
-		return -1
 	}
-	return -1
 }
 
 // ─── messages ─────────────────────────────────────────────────────────────────
@@ -322,7 +348,7 @@ type articleFetchedMsg struct {
 	imageURL string
 }
 type playerDoneMsg struct{}
-type playerPosMsg struct{ pos float64 }
+type playerPosMsg struct{} // triggers UI redraw; p.pos updated by trackPos goroutine
 type errMsg struct{ err error }
 
 // ─── model ────────────────────────────────────────────────────────────────────
@@ -476,14 +502,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "]":
 			if m.player.isActive() {
 				m.player.seek(30)
-				m.player.pos = min(m.player.pos+30, m.player.duration)
+				m.player.setPos(min(m.player.getPos()+30, m.player.duration))
 				return m, nil
 			}
 
 		case "[":
 			if m.player.isActive() {
 				m.player.seek(-10)
-				m.player.pos = max(m.player.pos-10, 0)
+				m.player.setPos(max(m.player.getPos()-10, 0))
 				return m, nil
 			}
 
@@ -521,9 +547,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playerPosMsg:
-		if msg.pos >= 0 {
-			m.player.pos = msg.pos
-		}
+		// pos is updated by trackPos goroutine; this tick just redraws the UI
 		if m.player.isActive() {
 			return m, pollPlayerPos()
 		}
@@ -559,10 +583,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// pollPlayerPos returns a Cmd that fires after 1s and reads the mpv position.
+// pollPlayerPos returns a Cmd that fires every second to refresh the player UI.
+// The actual position is kept current by the trackPos goroutine.
 func pollPlayerPos() tea.Cmd {
 	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
-		return playerPosMsg{pos: queryMPVPos()}
+		return playerPosMsg{}
 	})
 }
 
@@ -696,7 +721,8 @@ func (m model) playerBar() string {
 		icon = "⏸"
 	}
 
-	posStr := fmtDuration(m.player.pos)
+	pos := m.player.getPos()
+	posStr := fmtDuration(pos)
 	durStr := fmtDuration(m.player.duration)
 	controls := "  [-10  ]+30  spc:⏸  x:■"
 	sep := " · "
@@ -728,7 +754,7 @@ func (m model) playerBar() string {
 
 	pct := 0.0
 	if m.player.duration > 0 {
-		pct = m.player.pos / m.player.duration
+		pct = pos / m.player.duration
 	}
 	bar := simpleBar(pct, barW)
 
