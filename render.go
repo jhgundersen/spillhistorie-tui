@@ -546,3 +546,77 @@ func findEl(n *html.Node, tag string) *html.Node {
 	}
 	return nil
 }
+
+// findElByClass finds the first element with the given tag and CSS class.
+func findElByClass(n *html.Node, tag, class string) *html.Node {
+	if n.Type == html.ElementNode && (tag == "" || n.Data == tag) {
+		for _, a := range n.Attr {
+			if a.Key == "class" {
+				for _, c := range strings.Fields(a.Val) {
+					if c == class {
+						return n
+					}
+				}
+			}
+		}
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if found := findElByClass(c, tag, class); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// findContentRoot locates the main article content node in a full HTML document.
+// Tries <article>, then common WordPress content div classes.
+func findContentRoot(doc *html.Node) *html.Node {
+	if n := findEl(doc, "article"); n != nil {
+		return n
+	}
+	if n := findElByClass(doc, "div", "entry-content"); n != nil {
+		return n
+	}
+	if n := findElByClass(doc, "div", "post-content"); n != nil {
+		return n
+	}
+	return nil
+}
+
+// ExtractPageBodyImages extracts images from only the main article content area
+// of a raw HTML page, skipping navigation, headers, footers, and sidebars.
+func ExtractPageBodyImages(rawHTML string) []ImageRef {
+	doc, err := html.Parse(strings.NewReader(rawHTML))
+	if err != nil {
+		return nil
+	}
+	root := findContentRoot(doc)
+	if root == nil {
+		// Fall back to body but skip structural noise
+		root = findEl(doc, "body")
+		if root == nil {
+			root = doc
+		}
+	}
+
+	var images []ImageRef
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "nav", "header", "footer", "aside", "script", "style":
+				return // skip these subtrees
+			case "img":
+				if src := bestImgSrc(n); src != "" {
+					images = append(images, ImageRef{Src: src, Alt: elAttr(n, "alt")})
+				}
+				return
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(root)
+	return images
+}

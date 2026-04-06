@@ -344,14 +344,19 @@ func (p *player) trackPos() {
 type rssFetchedMsg []article
 type podcastsFetchedMsg []podcastEpisode
 type articleFetchedMsg struct {
-	title    string
-	rawHTML  string
-	imageURL string
-	images   []ImageRef
+	title      string
+	rawHTML    string
+	imageURL   string
+	images     []ImageRef // gallery images (regular articles)
+	inlineImgs []ImageRef // inline images (quiz/visual articles)
 }
 type playerDoneMsg struct{}
 type playerPosMsg struct{} // triggers UI redraw; p.pos updated by trackPos goroutine
 type bodyImageFetchedMsg struct{ rendered string }
+type inlineImageLoadedMsg struct {
+	idx      int
+	rendered string
+}
 type errMsg struct{ err error }
 
 // ─── model ────────────────────────────────────────────────────────────────────
@@ -372,11 +377,13 @@ type model struct {
 	currentArticle      article
 	currentHTML         string
 	currentArticleImage string
-	articleImages       []ImageRef
-	imageViewIdx        int    // next image index to show (cycles)
-	imageViewSrc        string // image currently being shown/loaded
+	articleImages       []ImageRef         // gallery images (regular articles)
+	inlineImgs          []ImageRef         // inline images (quiz/visual articles)
+	inlineImgCache      map[int]string     // idx → rendered chafa output
+	imageViewIdx        int                // next image index to show (cycles)
+	imageViewSrc        string             // image currently being shown/loaded
 	imageViewAlt        string
-	imageRendered       string // empty = still loading
+	imageRendered       string             // empty = still loading
 }
 
 func initialModel() model {
@@ -565,10 +572,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentHTML = msg.rawHTML
 		m.currentArticleImage = msg.imageURL
 		m.articleImages = msg.images
+		m.inlineImgs = msg.inlineImgs
+		m.inlineImgCache = make(map[int]string)
 		m.imageViewIdx = 0
 		m.rebuildArticleContent()
 		m.viewport.GotoTop()
 		m.state = stateArticle
+		// Start loading inline images in parallel (quiz/visual articles)
+		if len(msg.inlineImgs) > 0 {
+			cmds := make([]tea.Cmd, len(msg.inlineImgs))
+			for i, img := range msg.inlineImgs {
+				cmds[i] = fetchInlineImage(i, img.Src, img.Alt, m.width, m.height)
+			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
+
+	case inlineImageLoadedMsg:
+		if m.inlineImgCache == nil {
+			m.inlineImgCache = make(map[int]string)
+		}
+		m.inlineImgCache[msg.idx] = msg.rendered
+		if m.state == stateArticle {
+			offset := m.viewport.YOffset
+			m.rebuildArticleContent()
+			m.viewport.YOffset = offset
+		}
 		return m, nil
 
 	case playerPosMsg:
@@ -673,6 +702,19 @@ func (m *model) rebuildArticleContent() {
 	if m.currentHTML != "" {
 		parts = append(parts, renderHTML(m.currentHTML, m.viewport.Width))
 	}
+	// Inline images for quiz/visual articles — show each as it loads
+	for i, ref := range m.inlineImgs {
+		if rendered, ok := m.inlineImgCache[i]; ok {
+			parts = append(parts, rendered)
+		} else {
+			placeholder := imgFallbackStyle.Render(
+				fmt.Sprintf("[Laster bilde %d/%d…]", i+1, len(m.inlineImgs)))
+			if ref.Alt != "" {
+				placeholder += "\n" + captionStyle.Render(ref.Alt)
+			}
+			parts = append(parts, placeholder)
+		}
+	}
 	if len(parts) > 0 {
 		m.viewport.SetContent(strings.Join(parts, "\n\n"))
 	}
@@ -747,7 +789,14 @@ func (m model) articleView() string {
 
 func (m model) articleHelpText() string {
 	s := "↑/↓ j/k: scroll  ·  g/G: topp/bunn  ·  esc: tilbake  ·  q: avslutt"
-	if n := len(m.articleImages); n > 0 {
+	if n := len(m.inlineImgs); n > 0 {
+		loaded := len(m.inlineImgCache)
+		if loaded < n {
+			s += fmt.Sprintf("  ·  bilder: %d/%d laster", loaded, n)
+		} else {
+			s += fmt.Sprintf("  ·  %d bilder", n)
+		}
+	} else if n := len(m.articleImages); n > 0 {
 		s += fmt.Sprintf("  ·  i: bilder (%d)", n)
 	}
 	return s
@@ -774,6 +823,29 @@ func (m model) imageView() string {
 	}
 	help := helpStyle.Render("esc: tilbake  ·  i: neste bilde (" + counter + ")")
 	return docStyle.Render(title + centeredImg + "\n\n" + help)
+}
+
+// fetchInlineImage downloads and renders one inline image for quiz/visual articles.
+func fetchInlineImage(idx int, src, alt string, termWidth, termHeight int) tea.Cmd {
+	return func() tea.Msg {
+		imgW := termWidth - 4
+		if imgW < 20 {
+			imgW = 20
+		}
+		imgH := termHeight / 2
+		if imgH < 10 {
+			imgH = 10
+		}
+		rendered := renderImageBounded(src, alt, imgW, imgH)
+		if rendered == "" {
+			if alt != "" {
+				rendered = imgFallbackStyle.Render("[Bilde: " + alt + "]")
+			} else {
+				rendered = imgFallbackStyle.Render("[Bilde]")
+			}
+		}
+		return inlineImageLoadedMsg{idx: idx, rendered: rendered}
+	}
 }
 
 // fetchBodyImage downloads and renders a body image via chafa,

@@ -176,11 +176,25 @@ func fetchArticle(articleURL string) tea.Cmd {
 			return errMsg{err}
 		}
 
+		// Images readability kept (filtered, usually correct for normal articles)
+		contentImages := ExtractArticleImages(parsed.Content)
+
+		// For quiz/gallery articles, readability strips all images.
+		// Extract from the raw article area instead and show inline.
+		var inlineImgs []ImageRef
+		if len(contentImages) == 0 {
+			bodyImages := ExtractPageBodyImages(string(pageBytes))
+			if len(bodyImages) >= 3 {
+				inlineImgs = bodyImages
+			}
+		}
+
 		return articleFetchedMsg{
-			title:    parsed.Title,
-			rawHTML:  parsed.Content,
-			imageURL: parsed.Image,
-			images:   ExtractArticleImages(string(pageBytes)),
+			title:      parsed.Title,
+			rawHTML:    parsed.Content,
+			imageURL:   parsed.Image,
+			images:     contentImages,
+			inlineImgs: inlineImgs,
 		}
 	}
 }
