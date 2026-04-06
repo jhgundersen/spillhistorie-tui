@@ -194,7 +194,14 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 		}
 
 	case "img":
-		src, alt := elAttr(n, "src"), elAttr(n, "alt")
+		src := elAttr(n, "src")
+		if src == "" {
+			src = elAttr(n, "data-src")
+		}
+		if src == "" {
+			src = elAttr(n, "data-lazy-src")
+		}
+		alt := elAttr(n, "alt")
 		if rendered := renderImage(src, alt, width); rendered != "" {
 			buf.WriteString("\n" + rendered + "\n")
 		}
@@ -339,7 +346,12 @@ func renderImage(src, alt string, width int) string {
 }
 
 func chafaRender(src, alt string, width int) (string, error) {
-	resp, err := http.Get(src)
+	req, err := http.NewRequest("GET", src, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 spillhistorie-tui/1.0")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -375,6 +387,7 @@ func chafaRender(src, alt string, width int) (string, error) {
 
 	out, err := exec.Command(chafaPath,
 		"--size", fmt.Sprintf("%dx0", imgW),
+		"--format", "symbols",
 		"--symbols", "block+border+space",
 		tmp.Name(),
 	).Output()

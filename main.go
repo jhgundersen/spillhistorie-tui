@@ -359,10 +359,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "q":
-			if m.state == stateBrowse || m.state == stateError {
-				m.player.stop()
-				return m, tea.Quit
-			}
+			m.player.stop()
+			return m, tea.Quit
 
 		case "tab":
 			if m.state == stateBrowse {
@@ -375,6 +373,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.tab = tabArticles
 				}
+			}
+
+		case "g":
+			if m.state == stateArticle {
+				m.viewport.GotoTop()
+				return m, nil
+			}
+
+		case "G":
+			if m.state == stateArticle {
+				m.viewport.GotoBottom()
+				return m, nil
 			}
 
 		case "esc":
@@ -492,7 +502,7 @@ func (m *model) resize() {
 	h, v := docStyle.GetFrameSize()
 	playerH := 0
 	if m.player.isActive() {
-		playerH = 3 // 2 player lines + 1 separator blank line
+		playerH = 2 // 1 player line + 1 blank separator
 	}
 	// tab bar(1) + kofi(1) + help(1) + separators/spacing(2) = 5
 	listH := m.height - v - 5 - playerH
@@ -507,7 +517,8 @@ func (m *model) resize() {
 	if vpH < 5 {
 		vpH = 5
 	}
-	m.viewport = viewport.New(m.width-h, vpH)
+	m.viewport.Width = m.width - h
+	m.viewport.Height = vpH
 }
 
 // ─── view ─────────────────────────────────────────────────────────────────────
@@ -544,7 +555,9 @@ func (m model) browseView() string {
 		body = m.podcastList.View()
 	}
 
-	footer := kofiStyle.Render("♥ Støtt spillhistorie.no: "+kofiURL) + "\n" +
+	inner := m.width - 4
+	footer := lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
+		Render(kofiStyle.Render("♥  Støtt spillhistorie.no: "+kofiURL+"  ♥")) + "\n" +
 		helpStyle.Render("tab: bytt visning  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
 
 	parts := []string{m.tabBar(), body, "", footer}
@@ -555,7 +568,8 @@ func (m model) browseView() string {
 }
 
 func (m model) articleView() string {
-	sep := strings.Repeat("─", max(0, m.width-4))
+	inner := m.width - 4
+	sep := strings.Repeat("─", max(0, inner))
 	lines := []string{
 		articleTitleStyle.Render(m.currentArticle.title),
 		metaStyle.Render(m.currentArticle.author + "  ·  " + m.currentArticle.published),
@@ -563,7 +577,8 @@ func (m model) articleView() string {
 		m.viewport.View(),
 		sep,
 		helpStyle.Render("↑/↓ j/k: scroll  ·  g/G: topp/bunn  ·  esc: tilbake  ·  q: avslutt"),
-		kofiStyle.Render("♥ Støtt spillhistorie.no: " + kofiURL),
+		lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
+			Render(kofiStyle.Render("♥  Støtt spillhistorie.no: " + kofiURL + "  ♥")),
 	}
 	if m.player.isActive() {
 		lines = append(lines, "", m.playerBar())
@@ -583,50 +598,72 @@ func (m model) tabBar() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, art, pod)
 }
 
-// playerBar renders a 2-line footer player with progress bar.
+// playerBar renders a single-line footer player with progress bar.
 func (m model) playerBar() string {
 	inner := m.width - 4 // width inside docStyle margins
 
-	// ── Line 1: status icon + series + title ────────────────────────────────
 	icon := "▶"
 	if m.player.status == playerPaused {
 		icon = "⏸"
 	}
-	prefix := icon + "  " + m.player.series + "  ·  "
-	titleW := inner - utf8.RuneCountInString(prefix) - 2
-	if titleW < 5 {
-		titleW = 5
-	}
-	line1 := playerBGStyle.Width(inner).Render(
-		" " + playerMetaStyle.Render(icon) +
-			"  " + playerTitleStyle.Render(m.player.series) +
-			"  " + playerMetaStyle.Render("·") +
-			"  " + playerTitleStyle.Render(clamp(m.player.title, titleW)),
-	)
 
-	// ── Line 2: time + progress bar + duration + controls ────────────────────
 	posStr := fmtDuration(m.player.pos)
 	durStr := fmtDuration(m.player.duration)
-	controls := "  space:⏸  x:■"
-	// Fixed chars: " " + posStr + "  " + durStr + controls
-	fixedW := 1 + utf8.RuneCountInString(posStr) + 2 + utf8.RuneCountInString(durStr) +
+	controls := "  spc:⏸  x:■"
+	sep := " · "
+
+	// Measure fixed portions (rune widths, ASCII-only except icon which is 1 cell)
+	fixedW := 1 + 1 + // icon + space
+		utf8.RuneCountInString(m.player.series) + len(sep) + // series + sep
+		utf8.RuneCountInString(posStr) + 1 + // pos + space
+		1 + utf8.RuneCountInString(durStr) + // space + dur
 		utf8.RuneCountInString(controls)
-	barW := inner - fixedW
-	if barW < 5 {
-		barW = 5
+
+	// Remaining width split: 1/3 bar, 2/3 title
+	remaining := inner - fixedW
+	barW := remaining / 3
+	if barW < 4 {
+		barW = 4
+	}
+	titleW := remaining - barW - 1 // -1 for space between title and pos
+	if titleW < 0 {
+		titleW = 0
+	}
+
+	title := clamp(m.player.title, titleW)
+	// Pad title to exact titleW so total width is predictable
+	titleRunes := utf8.RuneCountInString(title)
+	if titleRunes < titleW {
+		title += strings.Repeat(" ", titleW-titleRunes)
 	}
 
 	pct := 0.0
 	if m.player.duration > 0 {
 		pct = m.player.pos / m.player.duration
 	}
-	bar := renderProgressBar(pct, barW)
+	bar := simpleBar(pct, barW)
 
-	line2 := playerBGStyle.Width(inner).Render(
-		" " + posStr + "  " + bar + "  " + durStr + controls,
-	)
+	line := icon + " " + m.player.series + sep + title + " " + posStr + " " + bar + " " + durStr + controls
+	// Pad any remaining space
+	lineRunes := utf8.RuneCountInString(icon+" "+m.player.series+sep+title+" "+posStr+" "+bar+" "+durStr+controls)
+	if lineRunes < inner {
+		line += strings.Repeat(" ", inner-lineRunes)
+	}
 
-	return line1 + "\n" + line2
+	return playerBGStyle.Render(line)
+}
+
+// simpleBar renders an ASCII progress bar using plain characters (safe width).
+func simpleBar(pct float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	pct = max(0.0, min(1.0, pct))
+	filled := int(pct * float64(width))
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("=", filled) + strings.Repeat("-", width-filled)
 }
 
 // renderProgressBar renders a unicode progress bar at the given percentage.
