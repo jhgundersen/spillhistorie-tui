@@ -473,14 +473,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "i":
-			if m.state == stateArticle && len(m.articleImages) > 0 {
+			if (m.state == stateArticle || m.state == stateImageView) && len(m.articleImages) > 0 {
 				img := m.articleImages[m.imageViewIdx%len(m.articleImages)]
 				m.imageViewIdx++
 				m.imageViewSrc = img.Src
 				m.imageViewAlt = img.Alt
 				m.imageRendered = ""
 				m.state = stateImageView
-				return m, tea.Batch(m.spinner.Tick, fetchBodyImage(img.Src, img.Alt, m.width))
+				return m, tea.Batch(m.spinner.Tick, fetchBodyImage(img.Src, img.Alt, m.width, m.height))
 			}
 
 		case "esc":
@@ -592,7 +592,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playerDoneMsg:
-		m.player.finish()
+		if m.player.isActive() {
+			// Natural completion — episode played to end
+			m.player.finish()
+		}
+		// If already stopped (manually killed), don't touch the resume file
 		m.resize()
 		return m, nil
 
@@ -759,14 +763,19 @@ func (m model) imageView() string {
 	return docStyle.Render(title + m.imageRendered + "\n\n" + help)
 }
 
-// fetchBodyImage downloads and renders a body image via chafa.
-func fetchBodyImage(src, alt string, width int) tea.Cmd {
+// fetchBodyImage downloads and renders a body image via chafa,
+// bounded to 75% of the terminal's width and height.
+func fetchBodyImage(src, alt string, termWidth, termHeight int) tea.Cmd {
 	return func() tea.Msg {
-		imgW := width - 8 // leave some margin
+		imgW := (termWidth - 4) * 3 / 4
 		if imgW < 20 {
 			imgW = 20
 		}
-		rendered := renderImage(src, alt, imgW)
+		imgH := termHeight * 3 / 4
+		if imgH < 10 {
+			imgH = 10
+		}
+		rendered := renderImageBounded(src, alt, imgW, imgH)
 		if rendered == "" {
 			rendered = imgFallbackStyle.Render("[Kunne ikke laste bilde]")
 		}

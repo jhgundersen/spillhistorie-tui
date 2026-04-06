@@ -72,7 +72,16 @@ var (
 	imgFallbackStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888888")).
 				Italic(true)
+
+	imgPlaceholderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#C0A0FF")).
+				Background(lipgloss.Color("#1A0E3A")).
+				Padding(0, 1)
 )
+
+// renderImgCounter is reset at the start of each renderHTML call and
+// incremented for every body image so placeholders can be numbered.
+var renderImgCounter int
 
 // chafaPath is set at startup if chafa is found in PATH.
 var chafaPath string
@@ -100,6 +109,7 @@ func imgLog(format string, args ...interface{}) {
 
 // renderHTML converts an HTML fragment (from go-readability) to terminal text.
 func renderHTML(content string, width int) string {
+	renderImgCounter = 0
 	doc, err := html.Parse(strings.NewReader(content))
 	if err != nil {
 		return content
@@ -207,13 +217,14 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 		}
 
 	case "img":
-		// Body images are rendered lazily on demand — show a placeholder.
+		// Body images are rendered lazily on demand — show a numbered placeholder.
+		renderImgCounter++
 		alt := elAttr(n, "alt")
-		label := "Bilde"
+		label := fmt.Sprintf("Bilde %d", renderImgCounter)
 		if alt != "" {
-			label = "Bilde: " + alt
+			label = fmt.Sprintf("Bilde %d: %s", renderImgCounter, alt)
 		}
-		buf.WriteString(imgFallbackStyle.Render("["+label+" — i: vis]") + "\n\n")
+		buf.WriteString(imgPlaceholderStyle.Render("  📷 "+label+"  ·  i: vis  ") + "\n\n")
 
 	case "figure":
 		renderBlockChildren(n, buf, width)
@@ -376,10 +387,14 @@ func normalizeImgURL(src string) string {
 }
 
 func renderImage(src, alt string, width int) string {
+	return renderImageBounded(src, alt, width, 0)
+}
+
+func renderImageBounded(src, alt string, width, maxHeight int) string {
 	src = normalizeImgURL(src)
 	imgLog("renderImage src=%q chafaPath=%q", src, chafaPath)
 	if src != "" && chafaPath != "" {
-		out, err := chafaRender(src, alt, width)
+		out, err := chafaRender(src, alt, width, maxHeight)
 		imgLog("chafaRender err=%v outLen=%d", err, len(out))
 		if err == nil && out != "" {
 			return out
@@ -394,7 +409,7 @@ func renderImage(src, alt string, width int) string {
 	return ""
 }
 
-func chafaRender(src, alt string, width int) (string, error) {
+func chafaRender(src, alt string, width, maxHeight int) (string, error) {
 	req, err := http.NewRequest("GET", src, nil)
 	if err != nil {
 		return "", err
@@ -435,10 +450,14 @@ func chafaRender(src, alt string, width int) (string, error) {
 	if imgW < 10 {
 		imgW = 10
 	}
+	sizeArg := fmt.Sprintf("%d", imgW)
+	if maxHeight > 0 {
+		sizeArg = fmt.Sprintf("%dx%d", imgW, maxHeight)
+	}
 
 	var chafaStderr strings.Builder
 	cmd := exec.Command(chafaPath,
-		"--size", fmt.Sprintf("%d", imgW),
+		"--size", sizeArg,
 		"--format", "symbol",
 		"--symbols", "block+border+space",
 		tmp.Name(),
