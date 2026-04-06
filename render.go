@@ -7,11 +7,13 @@ package main
 // - Bold, italic, links, code, blockquotes, lists, hr
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -431,7 +433,40 @@ func renderImageBounded(src, alt string, width, maxHeight int) string {
 	return ""
 }
 
+// chafaCacheDir returns the directory used for on-disk chafa output cache,
+// creating it if necessary. Returns "" on any error.
+func chafaCacheDir() string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(base, "spillhistorie", "images")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
+}
+
+// chafaCacheKey returns a filename-safe cache key for a given src/width/height.
+func chafaCacheKey(src string, width, maxHeight int) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d", src, width, maxHeight)))
+	return fmt.Sprintf("%x", h)
+}
+
 func chafaRender(src, alt string, width, maxHeight int) (string, error) {
+	// Check disk cache first (keyed on URL + dimensions, alt is appended after).
+	cacheDir := chafaCacheDir()
+	cacheKey := chafaCacheKey(src, width, maxHeight)
+	if cacheDir != "" {
+		if data, err := os.ReadFile(filepath.Join(cacheDir, cacheKey)); err == nil {
+			result := string(data)
+			if alt != "" {
+				result += "\n" + captionStyle.Render("  "+alt)
+			}
+			return result, nil
+		}
+	}
+
 	req, err := http.NewRequest("GET", src, nil)
 	if err != nil {
 		return "", err
@@ -492,6 +527,12 @@ func chafaRender(src, alt string, width, maxHeight int) (string, error) {
 	}
 
 	result := strings.TrimRight(string(out), "\n")
+
+	// Persist raw render to disk cache (without caption — alt may vary per call).
+	if cacheDir != "" {
+		_ = os.WriteFile(filepath.Join(cacheDir, cacheKey), []byte(result), 0o644)
+	}
+
 	if alt != "" {
 		result += "\n" + captionStyle.Render("  "+alt)
 	}
