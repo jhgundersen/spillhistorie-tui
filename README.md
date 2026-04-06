@@ -47,11 +47,21 @@ Browse articles and listen to podcasts about gaming history directly in your ter
 
 ## Installation
 
+### One-liner (Linux / macOS)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jhgundersen/spillhistorie-tui/main/install.sh | sh
+```
+
+Downloads the latest release binary for your OS and architecture to `/usr/local/bin` (or `~/.local/bin` if you don't have write access there).
+
+### Via Go
+
 ```sh
 go install github.com/jhgundersen/spillhistorie-tui@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```sh
 git clone https://github.com/jhgundersen/spillhistorie-tui
