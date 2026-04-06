@@ -4,6 +4,43 @@ A terminal client for [spillhistorie.no](https://spillhistorie.no) — *Litt ret
 
 Browse articles and listen to podcasts about gaming history directly in your terminal.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jhgundersen/spillhistorie-tui/main/install.sh | sh
+```
+
+Downloads the latest release for your OS and architecture to `/usr/local/bin` (or `~/.local/bin` if you don't have write access there).
+
+> **Note:** If `~/.local/bin` is used, make sure it is in your `$PATH`.
+
+## Optional: mpv and chafa
+
+The app works without these, but they unlock extra features:
+
+| Tool | What it enables | Install |
+|------|----------------|---------|
+| [mpv](https://mpv.io) | Podcast playback | See below |
+| [chafa](https://hpjansson.org/chafa/) | Images rendered in the terminal | See below |
+
+### mpv
+
+| Platform | Command |
+|----------|---------|
+| Arch Linux | `sudo pacman -S mpv` |
+| Debian / Ubuntu | `sudo apt install mpv` |
+| Fedora | `sudo dnf install mpv` |
+| macOS (Homebrew) | `brew install mpv` |
+
+### chafa
+
+| Platform | Command |
+|----------|---------|
+| Arch Linux | `sudo pacman -S chafa` |
+| Debian / Ubuntu | `sudo apt install chafa` |
+| Fedora | `sudo dnf install chafa` |
+| macOS (Homebrew) | `brew install chafa` |
+
 ## Features
 
 - Browse and read articles via RSS
@@ -11,64 +48,7 @@ Browse articles and listen to podcasts about gaming history directly in your ter
 - Article images rendered in the terminal (requires chafa)
 - Fuzzy filtering of article and podcast lists
 - Resume podcast playback from where you left off
-- Fully keyboard-driven, adapts to terminal color scheme
-
-## Requirements
-
-### Required
-
-- [Go](https://go.dev) 1.22+ (to build)
-
-### Optional
-
-| Tool | Feature |
-|------|---------|
-| [mpv](https://mpv.io) | Podcast playback |
-| [chafa](https://hpjansson.org/chafa/) | Article images rendered in the terminal |
-
-#### Installing mpv
-
-| Platform | Command |
-|----------|---------|
-| Arch Linux | `sudo pacman -S mpv` |
-| Debian / Ubuntu | `sudo apt install mpv` |
-| Fedora | `sudo dnf install mpv` |
-| Homebrew (macOS) | `brew install mpv` |
-| Windows (Scoop) | `scoop install mpv` |
-
-#### Installing chafa
-
-| Platform | Command |
-|----------|---------|
-| Arch Linux | `sudo pacman -S chafa` |
-| Debian / Ubuntu | `sudo apt install chafa` |
-| Fedora | `sudo dnf install chafa` |
-| Homebrew (macOS) | `brew install chafa` |
-
-## Installation
-
-### One-liner (Linux / macOS)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/jhgundersen/spillhistorie-tui/main/install.sh | sh
-```
-
-Downloads the latest release binary for your OS and architecture to `/usr/local/bin` (or `~/.local/bin` if you don't have write access there).
-
-### Via Go
-
-```sh
-go install github.com/jhgundersen/spillhistorie-tui@latest
-```
-
-### Build from source
-
-```sh
-git clone https://github.com/jhgundersen/spillhistorie-tui
-cd spillhistorie-tui
-go build -o spillhistorie-tui .
-./spillhistorie-tui
-```
+- Fully keyboard-driven, adapts to your terminal color scheme
 
 ## Keybindings
 
@@ -102,7 +82,28 @@ go build -o spillhistorie-tui .
 | `x` | Stop (saves position for resuming) |
 | `q` | Quit (saves position for resuming) |
 
-## Go dependencies
+---
+
+## For developers
+
+### Build from source
+
+Requires [Go](https://go.dev) 1.22+.
+
+```sh
+git clone https://github.com/jhgundersen/spillhistorie-tui
+cd spillhistorie-tui
+go build -o spillhistorie-tui .
+./spillhistorie-tui
+```
+
+### Install via Go
+
+```sh
+go install github.com/jhgundersen/spillhistorie-tui@latest
+```
+
+### Go dependencies
 
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) — TUI framework
 - [Bubbles](https://github.com/charmbracelet/bubbles) — UI components (list, viewport, spinner)
