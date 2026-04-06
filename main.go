@@ -204,7 +204,6 @@ func (p *player) play(audioURL, title, series string, duration, startPos float64
 	p.status = playerPlaying
 	p.done = done
 	go func() { cmd.Wait(); close(done) }()
-	go p.trackPos()
 	return nil
 }
 
@@ -305,43 +304,6 @@ func (p *player) seek(delta float64) {
 	}()
 }
 
-// trackPos connects to the mpv IPC socket, subscribes to time-pos property
-// changes, and updates p.pos in real-time. Runs as a goroutine until mpv exits.
-func (p *player) trackPos() {
-	// Wait up to 3 s for mpv to create the socket
-	var conn net.Conn
-	for i := 0; i < 30; i++ {
-		if !p.isActive() {
-			return
-		}
-		var err error
-		conn, err = net.DialTimeout("unix", mpvSock, 100*time.Millisecond)
-		if err == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if conn == nil {
-		return
-	}
-	defer conn.Close()
-
-	fmt.Fprintf(conn, "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n")
-
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		var event struct {
-			Event string   `json:"event"`
-			ID    int      `json:"id"`
-			Data  *float64 `json:"data"`
-		}
-		if json.Unmarshal([]byte(scanner.Text()), &event) == nil &&
-			event.Event == "property-change" && event.ID == 1 && event.Data != nil {
-			p.setPos(*event.Data)
-		}
-	}
-}
-
 // ─── messages ─────────────────────────────────────────────────────────────────
 
 type rssFetchedMsg []article
@@ -354,7 +316,7 @@ type articleFetchedMsg struct {
 	inlineImgs []ImageRef // inline images (quiz/visual articles)
 }
 type playerDoneMsg struct{}
-type playerPosMsg struct{} // triggers UI redraw; p.pos updated by trackPos goroutine
+type playerPosMsg struct{ pos float64 } // pos < 0 means query failed
 type bodyImageFetchedMsg struct{ rendered string }
 type inlineImageLoadedMsg struct {
 	idx      int
@@ -604,8 +566,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playerPosMsg:
-		// pos is updated by trackPos goroutine; save periodically and redraw UI
 		if m.player.isActive() {
+			if msg.pos >= 0 {
+				m.player.setPos(msg.pos)
+			}
 			pos := m.player.getPos()
 			if pos > 10 && (m.player.duration <= 0 || pos < m.player.duration-30) {
 				saveResume(&resumeState{
@@ -658,12 +622,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// pollPlayerPos returns a Cmd that fires every second to refresh the player UI.
-// The actual position is kept current by the trackPos goroutine.
+// pollPlayerPos waits one second, queries mpv for the current playback position,
+// and returns it in a playerPosMsg. Works on all platforms via a simple
+// request/response IPC call rather than a persistent event stream.
 func pollPlayerPos() tea.Cmd {
-	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
-		return playerPosMsg{}
-	})
+	return func() tea.Msg {
+		time.Sleep(time.Second)
+		return playerPosMsg{pos: queryMpvPos()}
+	}
+}
+
+// queryMpvPos opens a fresh connection to the mpv IPC socket, sends a single
+// get_property request, and returns the time-pos value (or -1 on failure).
+func queryMpvPos() float64 {
+	conn, err := net.DialTimeout("unix", mpvSock, 300*time.Millisecond)
+	if err != nil {
+		return -1
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(500 * time.Millisecond)) //nolint:errcheck
+
+	fmt.Fprintf(conn, "{\"command\":[\"get_property\",\"time-pos\"],\"request_id\":1}\n")
+
+	sc := bufio.NewScanner(conn)
+	for sc.Scan() {
+		var r struct {
+			RequestID int      `json:"request_id"`
+			Data      *float64 `json:"data"`
+		}
+		if json.Unmarshal([]byte(sc.Text()), &r) == nil && r.RequestID == 1 && r.Data != nil {
+			return *r.Data
+		}
+	}
+	return -1
 }
 
 func (m *model) resize() {
