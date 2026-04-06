@@ -101,6 +101,7 @@ const (
 	stateBrowse
 	stateArticleLoading
 	stateArticle
+	stateImageView
 	stateError
 )
 
@@ -349,6 +350,7 @@ type articleFetchedMsg struct {
 }
 type playerDoneMsg struct{}
 type playerPosMsg struct{} // triggers UI redraw; p.pos updated by trackPos goroutine
+type bodyImageFetchedMsg struct{ rendered string }
 type errMsg struct{ err error }
 
 // ─── model ────────────────────────────────────────────────────────────────────
@@ -369,6 +371,11 @@ type model struct {
 	currentArticle      article
 	currentHTML         string
 	currentArticleImage string
+	articleImages       []ImageRef
+	imageViewIdx        int    // next image index to show (cycles)
+	imageViewSrc        string // image currently being shown/loaded
+	imageViewAlt        string
+	imageRendered       string // empty = still loading
 }
 
 func initialModel() model {
@@ -465,7 +472,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+		case "i":
+			if m.state == stateArticle && len(m.articleImages) > 0 {
+				img := m.articleImages[m.imageViewIdx%len(m.articleImages)]
+				m.imageViewIdx++
+				m.imageViewSrc = img.Src
+				m.imageViewAlt = img.Alt
+				m.imageRendered = ""
+				m.state = stateImageView
+				return m, tea.Batch(m.spinner.Tick, fetchBodyImage(img.Src, img.Alt, m.width))
+			}
+
 		case "esc":
+			if m.state == stateImageView {
+				m.state = stateArticle
+				return m, nil
+			}
 			if m.state == stateArticle || m.state == stateArticleLoading {
 				m.state = stateBrowse
 				return m, nil
@@ -541,16 +563,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case articleFetchedMsg:
 		m.currentHTML = msg.rawHTML
 		m.currentArticleImage = msg.imageURL
+		m.articleImages = ExtractArticleImages(msg.rawHTML)
+		m.imageViewIdx = 0
 		m.rebuildArticleContent()
 		m.viewport.GotoTop()
 		m.state = stateArticle
 		return m, nil
 
 	case playerPosMsg:
-		// pos is updated by trackPos goroutine; this tick just redraws the UI
+		// pos is updated by trackPos goroutine; save periodically and redraw UI
 		if m.player.isActive() {
+			pos := m.player.getPos()
+			if pos > 10 && (m.player.duration <= 0 || pos < m.player.duration-30) {
+				saveResume(&resumeState{
+					AudioURL: m.player.audioURL,
+					Title:    m.player.title,
+					Series:   m.player.series,
+					Duration: m.player.duration,
+					Pos:      pos,
+				})
+			}
 			return m, pollPlayerPos()
 		}
+		return m, nil
+
+	case bodyImageFetchedMsg:
+		m.imageRendered = msg.rendered
 		return m, nil
 
 	case playerDoneMsg:
@@ -650,6 +688,8 @@ func (m model) View() string {
 		return m.browseView()
 	case stateArticle:
 		return m.articleView()
+	case stateImageView:
+		return m.imageView()
 	case stateError:
 		return docStyle.Render(
 			errorStyle.Render("Feil: "+m.err.Error()) +
@@ -698,6 +738,40 @@ func (m model) articleView() string {
 		lines = append(lines, "", m.playerBar())
 	}
 	return docStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+func (m model) imageView() string {
+	total := len(m.articleImages)
+	idx := ((m.imageViewIdx - 1) % total)
+	counter := fmt.Sprintf("%d/%d", idx+1, total)
+
+	if m.imageRendered == "" {
+		return docStyle.Render(
+			"\n  " + m.spinner.View() + "  Laster bilde " + counter + "…",
+		)
+	}
+
+	title := ""
+	if m.imageViewAlt != "" {
+		title = captionStyle.Render("  "+m.imageViewAlt) + "\n"
+	}
+	help := helpStyle.Render("esc: tilbake  ·  i: neste bilde (" + counter + ")")
+	return docStyle.Render(title + m.imageRendered + "\n\n" + help)
+}
+
+// fetchBodyImage downloads and renders a body image via chafa.
+func fetchBodyImage(src, alt string, width int) tea.Cmd {
+	return func() tea.Msg {
+		imgW := width - 8 // leave some margin
+		if imgW < 20 {
+			imgW = 20
+		}
+		rendered := renderImage(src, alt, imgW)
+		if rendered == "" {
+			rendered = imgFallbackStyle.Render("[Kunne ikke laste bilde]")
+		}
+		return bodyImageFetchedMsg{rendered: rendered}
+	}
 }
 
 func (m model) tabBar() string {

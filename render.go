@@ -124,142 +124,9 @@ func renderHTML(content string, width int) string {
 // ─── block rendering ─────────────────────────────────────────────────────────
 
 func renderBlockChildren(n *html.Node, buf *strings.Builder, width int) {
-	skipped := map[*html.Node]bool{}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if skipped[c] {
-			continue
-		}
-		// Try float layout: img/figure followed by text paragraphs
-		if imgSrc, imgAlt, caption := extractFloatImg(c); imgSrc != "" {
-			var textNodes []*html.Node
-			for nx := c.NextSibling; nx != nil; nx = nx.NextSibling {
-				if nx.Type == html.TextNode {
-					if strings.TrimSpace(nx.Data) == "" {
-						continue // skip whitespace-only text between elements
-					}
-					break
-				}
-				if nx.Type != html.ElementNode || !isTextParagraph(nx) {
-					break
-				}
-				textNodes = append(textNodes, nx)
-				skipped[nx] = true
-			}
-			if len(textNodes) > 0 {
-				renderWithFloat(imgSrc, imgAlt, caption, textNodes, buf, width)
-				continue
-			}
-		}
 		renderBlock(c, buf, width)
 	}
-}
-
-// extractFloatImg returns the image src, alt, and caption from an <img> or
-// <figure> node. Returns empty src if the node is not a floatable image.
-func extractFloatImg(n *html.Node) (src, alt, caption string) {
-	if n.Type != html.ElementNode {
-		return
-	}
-	switch n.Data {
-	case "img":
-		src = bestImgSrc(n)
-		alt = elAttr(n, "alt")
-	case "figure":
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			if c.Type != html.ElementNode {
-				continue
-			}
-			switch c.Data {
-			case "img":
-				if src == "" {
-					src = bestImgSrc(c)
-					alt = elAttr(c, "alt")
-				}
-			case "figcaption":
-				caption = nodeText(c)
-			}
-		}
-	}
-	return
-}
-
-// isTextParagraph returns true for block elements that can wrap around an image.
-func isTextParagraph(n *html.Node) bool {
-	if n.Type != html.ElementNode {
-		return false
-	}
-	switch n.Data {
-	case "p", "ul", "ol":
-		return true
-	}
-	return false
-}
-
-// renderWithFloat renders textNodes on the left (75% width) and the image on
-// the right (25% width), combining them line-by-line.
-func renderWithFloat(imgSrc, imgAlt, caption string, textNodes []*html.Node, buf *strings.Builder, width int) {
-	imgW := max(width/4, 10)
-	textW := width - imgW - 1
-	if textW < 20 {
-		// Too narrow to float — fall back to stacked layout
-		if r := renderImage(imgSrc, imgAlt, imgW); r != "" {
-			buf.WriteString("\n" + rightAlignBlock(r, width) + "\n")
-		}
-		if caption != "" {
-			buf.WriteString(captionStyle.Render("  "+caption) + "\n\n")
-		}
-		for _, nd := range textNodes {
-			renderBlock(nd, buf, width)
-		}
-		return
-	}
-
-	// Render the image
-	imgContent := renderImage(imgSrc, imgAlt, imgW)
-	if caption != "" && imgContent != "" {
-		imgContent += "\n" + captionStyle.Render("  "+caption)
-	}
-	var imgLines []string
-	if imgContent != "" {
-		imgLines = strings.Split(strings.TrimRight(imgContent, "\n"), "\n")
-	}
-
-	// Render text blocks at reduced width
-	var textBuf strings.Builder
-	for _, nd := range textNodes {
-		renderBlock(nd, &textBuf, textW)
-	}
-	textContent := strings.TrimSpace(textBuf.String())
-	var textLines []string
-	if textContent != "" {
-		textLines = strings.Split(textContent, "\n")
-	}
-
-	total := max(len(textLines), len(imgLines))
-	if total == 0 {
-		return
-	}
-	buf.WriteString("\n")
-	for i := 0; i < total; i++ {
-		var tLine, iLine string
-		if i < len(textLines) {
-			tLine = textLines[i]
-		}
-		if i < len(imgLines) {
-			iLine = imgLines[i]
-		}
-		buf.WriteString(padRight(tLine, textW) + " " + iLine + "\n")
-	}
-	buf.WriteString("\n")
-}
-
-// padRight pads s with spaces on the right to reach the given visible width.
-func padRight(s string, width int) string {
-	w := lipgloss.Width(s)
-	if w >= width {
-		return s
-	}
-	return s + strings.Repeat(" ", width-w)
 }
 
 func renderBlock(n *html.Node, buf *strings.Builder, width int) {
@@ -340,20 +207,31 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 		}
 
 	case "img":
-		src := bestImgSrc(n)
+		// Body images are rendered lazily on demand — show a placeholder.
 		alt := elAttr(n, "alt")
-		imgW := max(width/4, 10)
-		if rendered := renderImage(src, alt, imgW); rendered != "" {
-			buf.WriteString("\n" + rightAlignBlock(rendered, width) + "\n")
+		label := "Bilde"
+		if alt != "" {
+			label = "Bilde: " + alt
 		}
+		buf.WriteString(imgFallbackStyle.Render("["+label+" — i: vis]") + "\n\n")
 
 	case "figure":
 		renderBlockChildren(n, buf, width)
 
 	case "figcaption":
-		if t := nodeText(n); t != "" {
-			buf.WriteString(captionStyle.Render("  "+t) + "\n\n")
+		caption := nodeText(n)
+		if caption == "" {
+			return
 		}
+		// Skip if caption duplicates the sibling <img> alt text
+		for sib := n.Parent.FirstChild; sib != nil; sib = sib.NextSibling {
+			if sib.Type == html.ElementNode && sib.Data == "img" {
+				if strings.EqualFold(elAttr(sib, "alt"), caption) {
+					return
+				}
+			}
+		}
+		buf.WriteString(captionStyle.Render("  "+caption) + "\n\n")
 
 	case "hr":
 		line := lipgloss.NewStyle().
@@ -579,27 +457,6 @@ func chafaRender(src, alt string, width int) (string, error) {
 	return result, nil
 }
 
-// rightAlignBlock pads each line of a block with spaces on the left so the
-// block appears flush with the right edge of totalWidth.
-func rightAlignBlock(content string, totalWidth int) string {
-	lines := strings.Split(content, "\n")
-	maxW := 0
-	for _, l := range lines {
-		if w := lipgloss.Width(l); w > maxW {
-			maxW = w
-		}
-	}
-	pad := totalWidth - maxW
-	if pad <= 0 {
-		return content
-	}
-	padStr := strings.Repeat(" ", pad)
-	for i, l := range lines {
-		lines[i] = padStr + l
-	}
-	return strings.Join(lines, "\n")
-}
-
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 
 // nodeText returns the plain text content of a node (strips tags).
@@ -625,6 +482,34 @@ func elAttr(n *html.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+// ImageRef holds a body image's URL and alt text for lazy loading.
+type ImageRef struct {
+	Src string
+	Alt string
+}
+
+// ExtractArticleImages walks parsed HTML and returns all body images in order.
+func ExtractArticleImages(content string) []ImageRef {
+	doc, err := html.Parse(strings.NewReader(content))
+	if err != nil {
+		return nil
+	}
+	var images []ImageRef
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "img" {
+			if src := bestImgSrc(n); src != "" {
+				images = append(images, ImageRef{Src: src, Alt: elAttr(n, "alt")})
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return images
 }
 
 func findEl(n *html.Node, tag string) *html.Node {
