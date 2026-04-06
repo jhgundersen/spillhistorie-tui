@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -161,7 +163,15 @@ func fetchArticle(articleURL string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		parsed, err := readability.FromReader(resp.Body, parsedURL)
+		// Read the full page once so we can pass it to both readability
+		// and our image extractor. Readability may strip image-heavy blocks
+		// (e.g. gallery/quiz articles), so we extract images from the raw HTML.
+		pageBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return errMsg{err}
+		}
+
+		parsed, err := readability.FromReader(bytes.NewReader(pageBytes), parsedURL)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -170,6 +180,7 @@ func fetchArticle(articleURL string) tea.Cmd {
 			title:    parsed.Title,
 			rawHTML:  parsed.Content,
 			imageURL: parsed.Image,
+			images:   ExtractArticleImages(string(pageBytes)),
 		}
 	}
 }

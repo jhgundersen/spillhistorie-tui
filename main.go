@@ -347,6 +347,7 @@ type articleFetchedMsg struct {
 	title    string
 	rawHTML  string
 	imageURL string
+	images   []ImageRef
 }
 type playerDoneMsg struct{}
 type playerPosMsg struct{} // triggers UI redraw; p.pos updated by trackPos goroutine
@@ -563,7 +564,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case articleFetchedMsg:
 		m.currentHTML = msg.rawHTML
 		m.currentArticleImage = msg.imageURL
-		m.articleImages = ExtractArticleImages(msg.rawHTML)
+		m.articleImages = msg.images
 		m.imageViewIdx = 0
 		m.rebuildArticleContent()
 		m.viewport.GotoTop()
@@ -734,7 +735,7 @@ func (m model) articleView() string {
 		sep,
 		m.viewport.View(),
 		sep,
-		helpStyle.Render("↑/↓ j/k: scroll  ·  g/G: topp/bunn  ·  esc: tilbake  ·  q: avslutt"),
+		helpStyle.Render(m.articleHelpText()),
 		lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
 			Render(kofiStyle.Render("♥  Støtt spillhistorie.no: " + kofiURL + "  ♥")),
 	}
@@ -744,23 +745,35 @@ func (m model) articleView() string {
 	return docStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
+func (m model) articleHelpText() string {
+	s := "↑/↓ j/k: scroll  ·  g/G: topp/bunn  ·  esc: tilbake  ·  q: avslutt"
+	if n := len(m.articleImages); n > 0 {
+		s += fmt.Sprintf("  ·  i: bilder (%d)", n)
+	}
+	return s
+}
+
 func (m model) imageView() string {
 	total := len(m.articleImages)
-	idx := ((m.imageViewIdx - 1) % total)
+	idx := (m.imageViewIdx - 1) % total
 	counter := fmt.Sprintf("%d/%d", idx+1, total)
+	inner := m.width - 4
 
 	if m.imageRendered == "" {
 		return docStyle.Render(
-			"\n  " + m.spinner.View() + "  Laster bilde " + counter + "…",
+			"\n\n" + lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
+				Render(m.spinner.View()+" Laster bilde "+counter+"…"),
 		)
 	}
 
+	centeredImg := centerBlock(m.imageRendered, inner)
 	title := ""
 	if m.imageViewAlt != "" {
-		title = captionStyle.Render("  "+m.imageViewAlt) + "\n"
+		title = lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
+			Render(captionStyle.Render(m.imageViewAlt)) + "\n\n"
 	}
 	help := helpStyle.Render("esc: tilbake  ·  i: neste bilde (" + counter + ")")
-	return docStyle.Render(title + m.imageRendered + "\n\n" + help)
+	return docStyle.Render(title + centeredImg + "\n\n" + help)
 }
 
 // fetchBodyImage downloads and renders a body image via chafa,

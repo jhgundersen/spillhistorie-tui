@@ -72,16 +72,7 @@ var (
 	imgFallbackStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888888")).
 				Italic(true)
-
-	imgPlaceholderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#C0A0FF")).
-				Background(lipgloss.Color("#1A0E3A")).
-				Padding(0, 1)
 )
-
-// renderImgCounter is reset at the start of each renderHTML call and
-// incremented for every body image so placeholders can be numbered.
-var renderImgCounter int
 
 // chafaPath is set at startup if chafa is found in PATH.
 var chafaPath string
@@ -109,7 +100,6 @@ func imgLog(format string, args ...interface{}) {
 
 // renderHTML converts an HTML fragment (from go-readability) to terminal text.
 func renderHTML(content string, width int) string {
-	renderImgCounter = 0
 	doc, err := html.Parse(strings.NewReader(content))
 	if err != nil {
 		return content
@@ -216,33 +206,13 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 			buf.WriteString("\n" + codeBlockStyle.Width(width-2).Render(t) + "\n\n")
 		}
 
-	case "img":
-		// Body images are rendered lazily on demand — show a numbered placeholder.
-		renderImgCounter++
-		alt := elAttr(n, "alt")
-		label := fmt.Sprintf("Bilde %d", renderImgCounter)
-		if alt != "" {
-			label = fmt.Sprintf("Bilde %d: %s", renderImgCounter, alt)
-		}
-		buf.WriteString(imgPlaceholderStyle.Render("  📷 "+label+"  ·  i: vis  ") + "\n\n")
+	case "img", "figcaption":
+		// Images and captions are suppressed from the body; view them via the
+		// gallery popup (press i in article view).
+		return
 
 	case "figure":
 		renderBlockChildren(n, buf, width)
-
-	case "figcaption":
-		caption := nodeText(n)
-		if caption == "" {
-			return
-		}
-		// Skip if caption duplicates the sibling <img> alt text
-		for sib := n.Parent.FirstChild; sib != nil; sib = sib.NextSibling {
-			if sib.Type == html.ElementNode && sib.Data == "img" {
-				if strings.EqualFold(elAttr(sib, "alt"), caption) {
-					return
-				}
-			}
-		}
-		buf.WriteString(captionStyle.Render("  "+caption) + "\n\n")
 
 	case "hr":
 		line := lipgloss.NewStyle().
@@ -375,7 +345,41 @@ func bestImgSrc(n *html.Node) string {
 			return s
 		}
 	}
+	// Fall back to the first URL in srcset
+	if ss := elAttr(n, "srcset"); ss != "" {
+		for _, part := range strings.Split(ss, ",") {
+			if fields := strings.Fields(strings.TrimSpace(part)); len(fields) > 0 {
+				if u := fields[0]; u != "" && !strings.HasPrefix(u, "data:") {
+					return u
+				}
+			}
+		}
+	}
 	return ""
+}
+
+// centerBlock pads each line of content with spaces on the left to center it
+// within totalWidth columns.
+func centerBlock(content string, totalWidth int) string {
+	if content == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	blockW := 0
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > blockW {
+			blockW = w
+		}
+	}
+	pad := (totalWidth - blockW) / 2
+	if pad <= 0 {
+		return content
+	}
+	padStr := strings.Repeat(" ", pad)
+	for i, l := range lines {
+		lines[i] = padStr + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // normalizeImgURL fixes protocol-relative URLs.
