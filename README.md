@@ -1,4 +1,4 @@
-# spillhistorie-tui
+# spillhistorie
 
 A terminal client for [spillhistorie.no](https://spillhistorie.no) — *Litt retro - litt nytt*.
 
@@ -93,14 +93,16 @@ Requires [Go](https://go.dev) 1.22+.
 ```sh
 git clone https://github.com/jhgundersen/spillhistorie-tui
 cd spillhistorie-tui
-go build -o spillhistorie-tui .
-./spillhistorie-tui
+go build -o spillhistorie .
+./spillhistorie
 ```
 
 ### Install via Go
 
 ```sh
 go install github.com/jhgundersen/spillhistorie-tui@latest
+
+> **Note:** The installed binary will be named `spillhistorie-tui` when using `go install` since the module name hasn't changed. Rename it after installation if needed: `mv $(go env GOPATH)/bin/spillhistorie-tui $(go env GOPATH)/bin/spillhistorie`
 ```
 
 ### Go dependencies

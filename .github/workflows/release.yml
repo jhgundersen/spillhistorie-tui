@@ -42,7 +42,7 @@ jobs:
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
           go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
-            -o "dist/spillhistorie-tui-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" .
+            -o "dist/spillhistorie-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" .
 
       - uses: actions/upload-artifact@v4
         with:

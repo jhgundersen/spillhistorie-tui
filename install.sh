@@ -2,7 +2,7 @@
 set -e
 
 REPO="jhgundersen/spillhistorie-tui"
-BIN="spillhistorie-tui"
+BIN="spillhistorie"
 
 # Detect OS
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"

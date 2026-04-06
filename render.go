@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/reflow/wrap"
+	"github.com/muesli/reflow/wordwrap"
 	"golang.org/x/net/html"
 )
 
@@ -268,7 +268,7 @@ func renderInline(n *html.Node, width int) string {
 	if t == "" || width <= 0 {
 		return t
 	}
-	return wrap.String(t, width)
+	return wordwrap.String(t, width)
 }
 
 func inlineChildren(n *html.Node, buf *strings.Builder) {
@@ -418,7 +418,7 @@ func chafaRender(src, alt string, width, maxHeight int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; spillhistorie-tui/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; spillhistorie/1.0)")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")
 	req.Header.Set("Referer", "https://spillhistorie.no/")
 	resp, err := http.DefaultClient.Do(req)

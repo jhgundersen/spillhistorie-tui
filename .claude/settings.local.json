@@ -47,7 +47,8 @@
       "Bash(go build:*)",
       "Bash(curl -s \"https://spillhistorie.no/2026/04/03/langfredagsquiz-kjenner-du-disse-spillene/\")",
       "Bash(python3:*)",
-      "Bash(grep -rn '\"#' /home/jonh/jonh.no/spillhistorie-tui/*.go)"
+      "Bash(grep -rn '\"#' /home/jonh/jonh.no/spillhistorie-tui/*.go)",
+      "Bash(make build:*)"
     ]
   }
 }

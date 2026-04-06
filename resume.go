@@ -19,7 +19,7 @@ func resumePath() string {
 	if err != nil {
 		dir = os.TempDir()
 	}
-	dir = filepath.Join(dir, "spillhistorie-tui")
+	dir = filepath.Join(dir, "spillhistorie")
 	os.MkdirAll(dir, 0700)
 	return filepath.Join(dir, "resume.json")
 }

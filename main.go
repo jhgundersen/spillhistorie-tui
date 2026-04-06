@@ -27,7 +27,7 @@ var version = "dev"
 const (
 	rssURL  = "https://spillhistorie.no/feed/"
 	kofiURL = "https://ko-fi.com/joachimfroholt"
-	mpvSock = "/tmp/spillhistorie-tui.sock"
+	mpvSock = "/tmp/spillhistorie.sock"
 )
 
 var podcastFeeds = []struct{ name, url string }{
@@ -663,16 +663,16 @@ func (m *model) resize() {
 	if m.player.isActive() {
 		playerH = 2 // 1 player line + 1 blank separator
 	}
-	// tab bar(1) + kofi(1) + help(1) + separators/spacing(2) = 5
-	listH := m.height - v - 5 - playerH
+	// tab bar(1) + help(1) + separators/spacing(2) = 4
+	listH := m.height - v - 4 - playerH
 	if listH < 5 {
 		listH = 5
 	}
 	m.articleList.SetSize(m.width-h, listH)
 	m.podcastList.SetSize(m.width-h, listH)
 
-	// title(1) + meta(1) + 2×sep(2) + help(1) + kofi(1) + spacing(2) = 8
-	vpH := m.height - v - 8 - playerH
+	// title(1) + meta(1) + 2×sep(2) + help(1) + spacing(2) = 7
+	vpH := m.height - v - 7 - playerH
 	if vpH < 5 {
 		vpH = 5
 	}
@@ -750,10 +750,7 @@ func (m model) browseView() string {
 		body = m.podcastList.View()
 	}
 
-	inner := m.width - 4
-	footer := lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
-		Render(kofiStyle.Render("♥  Støtt spillhistorie.no: "+kofiURL+"  ♥")) + "\n" +
-		helpStyle.Render("tab: bytt visning  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
+	footer := helpStyle.Render("tab: bytt visning  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
 
 	parts := []string{m.tabBar(), body, "", footer}
 	if m.player.isActive() {
@@ -772,8 +769,6 @@ func (m model) articleView() string {
 		m.viewport.View(),
 		sep,
 		helpStyle.Render(m.articleHelpText()),
-		lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).
-			Render(kofiStyle.Render("♥  Støtt spillhistorie.no: " + kofiURL + "  ♥")),
 	}
 	if m.player.isActive() {
 		lines = append(lines, "", m.playerBar())
@@ -871,7 +866,15 @@ func (m model) tabBar() string {
 		art = inactiveTabStyle.Render("Artikler")
 		pod = activeTabStyle.Render("Podkast")
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, art, pod)
+	tabs := lipgloss.JoinHorizontal(lipgloss.Top, art, pod)
+
+	inner := m.width - 4
+	kofi := kofiStyle.Render("♥  Støtt spillhistorie  ·  " + kofiURL + "  ♥")
+	gap := inner - lipgloss.Width(tabs) - lipgloss.Width(kofi)
+	if gap < 1 {
+		return tabs
+	}
+	return tabs + strings.Repeat(" ", gap) + kofi
 }
 
 // playerBar renders a single-line footer player with progress bar.
