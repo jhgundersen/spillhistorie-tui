@@ -30,7 +30,17 @@
       "Bash(python3 -c ':*)",
       "Bash(curl -s \"https://spillhistorie.no/2025/12/26/diskettkameratene-snakker-om-coverdisker/\")",
       "Bash(curl -s \"https://share.transistor.fm/e/7fabe402\")",
-      "Bash(sudo pacman:*)"
+      "Bash(sudo pacman:*)",
+      "Bash(curl -s \"https://spillhistorie.no/2026/03/30/cd-spills-paskespesial-2026/\")",
+      "Bash(curl -s \"https://feeds.transistor.fm/diskettkameratene\")",
+      "Bash(curl -s \"https://spillhistorie.no/2026/03/24/donkey-kong-med-spaell/\")",
+      "Bash(curl -s \"https://www.podbean.com/player-v2/?i=9rr5v-1a7722b-pb&from=pb6admin\")",
+      "Bash(curl -s \"https://spillhistorie.no/2026/03/10/skjulte-perler-pa-commodore-64/\")",
+      "Bash(curl -s \"https://www.podbean.com/site/search?q=cd+spill\")",
+      "Bash(curl -s \"https://feed.podbean.com/cdspill/feed.xml\")",
+      "Bash(curl -sv \"https://feed.podbean.com/cdspill/feed.xml\")",
+      "Bash(curl -sL --max-time 10 \"https://feed.podbean.com/cdspill/feed.xml\")",
+      "Bash(curl -sL --max-time 15 \"https://feed.podbean.com/cdspill/feed.xml\")"
     ]
   }
 }

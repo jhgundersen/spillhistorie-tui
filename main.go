@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -19,11 +21,15 @@ import (
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const (
-	rssURL     = "https://spillhistorie.no/feed/"
-	podcastURL = "https://spillhistorie.no/category/podcast/feed/"
-	kofiURL    = "https://ko-fi.com/joachimfroholt"
-	mpvSock    = "/tmp/spillhistorie-tui.sock"
+	rssURL  = "https://spillhistorie.no/feed/"
+	kofiURL = "https://ko-fi.com/joachimfroholt"
+	mpvSock = "/tmp/spillhistorie-tui.sock"
 )
+
+var podcastFeeds = []struct{ name, url string }{
+	{"Diskettkameratene", "https://feeds.transistor.fm/diskettkameratene"},
+	{"cd SPILL", "https://feed.podbean.com/cdspill/feed.xml"},
+}
 
 // ─── styles ───────────────────────────────────────────────────────────────────
 
@@ -57,9 +63,27 @@ var (
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FF5555"))
 
-	playerBarStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#2D1B69")).
-			Foreground(lipgloss.Color("#FAFAFA"))
+	playerBGStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#1A0E3A")).
+			Foreground(lipgloss.Color("#DEDEDE"))
+
+	playerTitleStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1A0E3A")).
+				Foreground(lipgloss.Color("#C0A0FF")).
+				Bold(true)
+
+	playerMetaStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("#1A0E3A")).
+			Foreground(lipgloss.Color("#888888"))
+
+	progressFilledStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#9B88FF"))
+
+	progressCursorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#C0A0FF"))
+
+	progressEmptyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#444444"))
 
 	kofiStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FF9B9B"))
@@ -76,7 +100,6 @@ const (
 	stateBrowse
 	stateArticleLoading
 	stateArticle
-	statePodcastLoading
 	stateError
 )
 
@@ -101,15 +124,20 @@ func (a article) Description() string { return a.author + "  ·  " + a.published
 func (a article) FilterValue() string { return a.title + " " + a.author }
 
 type podcastEpisode struct {
-	title      string
-	articleURL string
-	author     string
-	published  string
+	title         string
+	audioURL      string
+	duration      int // seconds
+	series        string
+	author        string
+	published     string
+	publishedUnix int64
 }
 
-func (e podcastEpisode) Title() string       { return e.title }
-func (e podcastEpisode) Description() string { return e.author + "  ·  " + e.published }
-func (e podcastEpisode) FilterValue() string { return e.title }
+func (e podcastEpisode) Title() string { return e.title }
+func (e podcastEpisode) Description() string {
+	return fmt.Sprintf("%s  ·  %s  ·  %s", e.series, e.published, fmtDuration(float64(e.duration)))
+}
+func (e podcastEpisode) FilterValue() string { return e.title + " " + e.series }
 
 // ─── player ───────────────────────────────────────────────────────────────────
 
@@ -122,15 +150,18 @@ const (
 )
 
 type player struct {
-	cmd    *exec.Cmd
-	status playerStatus
-	title  string
-	done   chan struct{}
+	cmd      *exec.Cmd
+	status   playerStatus
+	title    string
+	series   string
+	done     chan struct{}
+	pos      float64 // seconds, from IPC poll
+	duration float64 // seconds, from RSS
 }
 
 func (p *player) isActive() bool { return p.status != playerStopped }
 
-func (p *player) play(audioURL, title string) error {
+func (p *player) play(audioURL, title, series string, duration float64) error {
 	p.stop()
 	cmd := exec.Command("mpv",
 		"--no-video",
@@ -145,6 +176,9 @@ func (p *player) play(audioURL, title string) error {
 	done := make(chan struct{})
 	p.cmd = cmd
 	p.title = title
+	p.series = series
+	p.duration = duration
+	p.pos = 0
 	p.status = playerPlaying
 	p.done = done
 	go func() { cmd.Wait(); close(done) }()
@@ -172,8 +206,8 @@ func (p *player) togglePause() {
 	go func() {
 		var conn net.Conn
 		var err error
-		for i := 0; i < 15; i++ {
-			conn, err = net.Dial("unix", mpvSock)
+		for i := 0; i < 20; i++ {
+			conn, err = net.DialTimeout("unix", mpvSock, 100*time.Millisecond)
 			if err == nil {
 				break
 			}
@@ -205,7 +239,37 @@ func (p *player) stop() {
 	p.cmd = nil
 	p.status = playerStopped
 	p.title = ""
+	p.series = ""
+	p.pos = 0
+	p.duration = 0
 	os.Remove(mpvSock)
+}
+
+// queryMPVPos queries the mpv IPC socket for the current playback position.
+func queryMPVPos() float64 {
+	conn, err := net.DialTimeout("unix", mpvSock, 100*time.Millisecond)
+	if err != nil {
+		return -1
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(300 * time.Millisecond))
+	fmt.Fprintf(conn, "{\"command\":[\"get_property\",\"time-pos\"],\"request_id\":1}\n")
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, `"request_id":1`) {
+			continue
+		}
+		var resp struct {
+			Data  *float64 `json:"data"`
+			Error string   `json:"error"`
+		}
+		if json.Unmarshal([]byte(line), &resp) == nil && resp.Error == "success" && resp.Data != nil {
+			return *resp.Data
+		}
+		return -1
+	}
+	return -1
 }
 
 // ─── messages ─────────────────────────────────────────────────────────────────
@@ -213,8 +277,8 @@ func (p *player) stop() {
 type rssFetchedMsg []article
 type podcastsFetchedMsg []podcastEpisode
 type articleFetchedMsg struct{ title, content string }
-type podcastAudioMsg struct{ audioURL, title string }
 type playerDoneMsg struct{}
+type playerPosMsg struct{ pos float64 }
 type errMsg struct{ err error }
 
 // ─── model ────────────────────────────────────────────────────────────────────
@@ -330,8 +394,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				case tabPodcasts:
 					if item, ok := m.podcastList.SelectedItem().(podcastEpisode); ok {
-						m.state = statePodcastLoading
-						return m, tea.Batch(m.spinner.Tick, fetchPodcastAudio(item.articleURL, item.title))
+						if err := m.player.play(item.audioURL, item.title, item.series, float64(item.duration)); err != nil {
+							m.err = err
+							m.state = stateError
+							return m, nil
+						}
+						m.resize()
+						return m, tea.Batch(m.player.waitDone(), pollPlayerPos())
 					}
 				}
 			}
@@ -344,6 +413,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "x":
 			m.player.stop()
+			m.resize()
 			return m, nil
 		}
 
@@ -372,18 +442,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateArticle
 		return m, nil
 
-	case podcastAudioMsg:
-		if err := m.player.play(msg.audioURL, msg.title); err != nil {
-			m.err = err
-			m.state = stateError
-			return m, nil
+	case playerPosMsg:
+		if msg.pos >= 0 {
+			m.player.pos = msg.pos
 		}
-		m.state = stateBrowse
-		return m, m.player.waitDone()
+		if m.player.isActive() {
+			return m, pollPlayerPos()
+		}
+		return m, nil
 
 	case playerDoneMsg:
-		m.player.status = playerStopped
-		m.player.title = ""
+		m.player.stop()
+		m.resize()
 		return m, nil
 
 	case errMsg:
@@ -411,13 +481,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// pollPlayerPos returns a Cmd that fires after 1s and reads the mpv position.
+func pollPlayerPos() tea.Cmd {
+	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+		return playerPosMsg{pos: queryMPVPos()}
+	})
+}
+
 func (m *model) resize() {
 	h, v := docStyle.GetFrameSize()
 	playerH := 0
 	if m.player.isActive() {
-		playerH = 1
+		playerH = 3 // 2 player lines + 1 separator blank line
 	}
-	// tab bar (1) + kofi (1) + help (1) + spacing (2)
+	// tab bar(1) + kofi(1) + help(1) + separators/spacing(2) = 5
 	listH := m.height - v - 5 - playerH
 	if listH < 5 {
 		listH = 5
@@ -425,8 +502,8 @@ func (m *model) resize() {
 	m.articleList.SetSize(m.width-h, listH)
 	m.podcastList.SetSize(m.width-h, listH)
 
-	// article title (1) + meta (1) + 2×sep (2) + help (1) + kofi (1) + spacing (3)
-	vpH := m.height - v - 9 - playerH
+	// title(1) + meta(1) + 2×sep(2) + help(1) + kofi(1) + spacing(2) = 8
+	vpH := m.height - v - 8 - playerH
 	if vpH < 5 {
 		vpH = 5
 	}
@@ -444,8 +521,6 @@ func (m model) View() string {
 		return "\n\n  " + m.spinner.View() + " Laster Spillhistorie.no…\n\n"
 	case stateArticleLoading:
 		return "\n\n  " + m.spinner.View() + " Henter artikkel…\n\n"
-	case statePodcastLoading:
-		return "\n\n  " + m.spinner.View() + " Kobler til podcast…\n\n"
 	case stateBrowse:
 		return m.browseView()
 	case stateArticle:
@@ -470,7 +545,7 @@ func (m model) browseView() string {
 	}
 
 	footer := kofiStyle.Render("♥ Støtt spillhistorie.no: "+kofiURL) + "\n" +
-		helpStyle.Render("tab: bytt visning  ·  enter: åpne  ·  /: søk  ·  q: avslutt")
+		helpStyle.Render("tab: bytt visning  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
 
 	parts := []string{m.tabBar(), body, "", footer}
 	if m.player.isActive() {
@@ -508,19 +583,80 @@ func (m model) tabBar() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, art, pod)
 }
 
+// playerBar renders a 2-line footer player with progress bar.
 func (m model) playerBar() string {
-	icon, verb := "▶", "Spiller"
+	inner := m.width - 4 // width inside docStyle margins
+
+	// ── Line 1: status icon + series + title ────────────────────────────────
+	icon := "▶"
 	if m.player.status == playerPaused {
-		icon, verb = "⏸", "Pause"
+		icon = "⏸"
 	}
-	title := clamp(m.player.title, m.width-44)
-	bar := fmt.Sprintf(" %s %s: %s   [space: pause  x: stopp]", icon, verb, title)
-	return playerBarStyle.Width(m.width - 4).Render(bar)
+	prefix := icon + "  " + m.player.series + "  ·  "
+	titleW := inner - utf8.RuneCountInString(prefix) - 2
+	if titleW < 5 {
+		titleW = 5
+	}
+	line1 := playerBGStyle.Width(inner).Render(
+		" " + playerMetaStyle.Render(icon) +
+			"  " + playerTitleStyle.Render(m.player.series) +
+			"  " + playerMetaStyle.Render("·") +
+			"  " + playerTitleStyle.Render(clamp(m.player.title, titleW)),
+	)
+
+	// ── Line 2: time + progress bar + duration + controls ────────────────────
+	posStr := fmtDuration(m.player.pos)
+	durStr := fmtDuration(m.player.duration)
+	controls := "  space:⏸  x:■"
+	// Fixed chars: " " + posStr + "  " + durStr + controls
+	fixedW := 1 + utf8.RuneCountInString(posStr) + 2 + utf8.RuneCountInString(durStr) +
+		utf8.RuneCountInString(controls)
+	barW := inner - fixedW
+	if barW < 5 {
+		barW = 5
+	}
+
+	pct := 0.0
+	if m.player.duration > 0 {
+		pct = m.player.pos / m.player.duration
+	}
+	bar := renderProgressBar(pct, barW)
+
+	line2 := playerBGStyle.Width(inner).Render(
+		" " + posStr + "  " + bar + "  " + durStr + controls,
+	)
+
+	return line1 + "\n" + line2
+}
+
+// renderProgressBar renders a unicode progress bar at the given percentage.
+func renderProgressBar(pct float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	pct = max(0.0, min(1.0, pct))
+	filled := int(pct * float64(width))
+	rest := width - filled
+
+	var b strings.Builder
+	if filled > 0 {
+		b.WriteString(progressFilledStyle.Render(strings.Repeat("━", filled)))
+	}
+	if rest > 0 {
+		b.WriteString(progressCursorStyle.Render("╸"))
+		if rest > 1 {
+			b.WriteString(progressEmptyStyle.Render(strings.Repeat("─", rest-1)))
+		}
+	} else {
+		// At 100%, replace last char with a filled marker
+		b.WriteString(progressFilledStyle.Render("━"))
+	}
+	return b.String()
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// clamp truncates s to n visible runes, adding … if needed.
+// clamp truncates s to n visible runes.
 func clamp(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -530,6 +666,21 @@ func clamp(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// fmtDuration formats seconds as M:SS or H:MM:SS.
+func fmtDuration(secs float64) string {
+	if secs < 0 {
+		secs = 0
+	}
+	s := int(secs)
+	h := s / 3600
+	m := (s % 3600) / 60
+	sec := s % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
+	}
+	return fmt.Sprintf("%d:%02d", m, sec)
 }
 
 // stripTags removes HTML tags from a string.
@@ -547,15 +698,6 @@ func stripTags(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
-}
-
-// trunc truncates s to n runes.
-func trunc(s string, n int) string {
-	r := []rune(s)
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
