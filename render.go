@@ -24,53 +24,53 @@ import (
 var (
 	h1Style = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#C0A0FF"))
+		Foreground(lipgloss.Color("13")) // bright magenta
 
 	h2Style = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#9B88FF")).
+		Foreground(lipgloss.Color("5")). // magenta
 		Border(lipgloss.NormalBorder(), false, false, true, false).
-		BorderForeground(lipgloss.Color("#7D56F4"))
+		BorderForeground(lipgloss.Color("5"))
 
 	h3Style = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#B0A0FF"))
+		Foreground(lipgloss.Color("13")) // bright magenta
 
 	h4Style = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#AAAACC"))
+		Foreground(lipgloss.Color("6")) // cyan
 
 	rBoldStyle = lipgloss.NewStyle().Bold(true)
 
 	rItalicStyle = lipgloss.NewStyle().Italic(true)
 
 	rLinkStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7D56F4")).
+			Foreground(lipgloss.Color("4")). // blue
 			Underline(true)
 
 	inlineCodeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E8E8E8")).
-			Background(lipgloss.Color("#333333")).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("8")).
 			Padding(0, 1)
 
 	codeBlockStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#E8E8E8")).
-			Background(lipgloss.Color("#1A1A2E")).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("0")). // black
 			Padding(1, 2)
 
 	blockquoteStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#BBBBBB")).
+			Foreground(lipgloss.Color("7")).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(lipgloss.Color("5")).
 			PaddingLeft(1)
 
 	captionStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888888")).
+			Foreground(lipgloss.Color("8")). // bright black / gray
 			Italic(true)
 
 	imgFallbackStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888888")).
+				Foreground(lipgloss.Color("8")).
 				Italic(true)
 )
 
@@ -216,7 +216,7 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 
 	case "hr":
 		line := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#444444")).
+			Foreground(lipgloss.Color("8")).
 			Render(strings.Repeat("─", max(0, width-2)))
 		buf.WriteString("\n" + line + "\n\n")
 

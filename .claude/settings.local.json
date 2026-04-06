@@ -45,7 +45,9 @@
       "Bash(curl -sL \"https://i0.wp.com/spillhistorie.no/wp-content/uploads/2026/04/topp.jpg?fit=400%2C200&ssl=1\" -o /tmp/test-spill.jpg)",
       "Bash(chafa --size 40x10 /tmp/test-spill.jpg)",
       "Bash(go build:*)",
-      "Bash(curl -s \"https://spillhistorie.no/2026/04/03/langfredagsquiz-kjenner-du-disse-spillene/\")"
+      "Bash(curl -s \"https://spillhistorie.no/2026/04/03/langfredagsquiz-kjenner-du-disse-spillene/\")",
+      "Bash(python3:*)",
+      "Bash(grep -rn '\"#' /home/jonh/jonh.no/spillhistorie-tui/*.go)"
     ]
   }
 }

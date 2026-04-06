@@ -37,57 +37,57 @@ var podcastFeeds = []struct{ name, url string }{
 var (
 	activeTabStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FAFAFA")).
-			Background(lipgloss.Color("#7D56F4")).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("5")).
 			Padding(0, 2)
 
 	inactiveTabStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888888")).
+				Foreground(lipgloss.Color("8")).
 				Padding(0, 2)
 
 	listTitleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FAFAFA")).
-			Background(lipgloss.Color("#7D56F4")).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("5")).
 			Padding(0, 1)
 
 	articleTitleStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("#C0A0FF"))
+				Foreground(lipgloss.Color("13")) // bright magenta
 
 	metaStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888888"))
+			Foreground(lipgloss.Color("8"))
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#555555"))
+			Foreground(lipgloss.Color("8"))
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF5555"))
+			Foreground(lipgloss.Color("9")) // bright red
 
 	playerBGStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#1A0E3A")).
-			Foreground(lipgloss.Color("#DEDEDE"))
+			Background(lipgloss.Color("0")).
+			Foreground(lipgloss.Color("7"))
 
 	playerTitleStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("#1A0E3A")).
-				Foreground(lipgloss.Color("#C0A0FF")).
+				Background(lipgloss.Color("0")).
+				Foreground(lipgloss.Color("13")).
 				Bold(true)
 
 	playerMetaStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#1A0E3A")).
-			Foreground(lipgloss.Color("#888888"))
+			Background(lipgloss.Color("0")).
+			Foreground(lipgloss.Color("8"))
 
 	progressFilledStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#9B88FF"))
+				Foreground(lipgloss.Color("5"))
 
 	progressCursorStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#C0A0FF"))
+				Foreground(lipgloss.Color("13"))
 
 	progressEmptyStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#444444"))
+				Foreground(lipgloss.Color("8"))
 
 	kofiStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF9B9B"))
+			Foreground(lipgloss.Color("9"))
 
 	docStyle = lipgloss.NewStyle().Margin(1, 2)
 )
@@ -389,7 +389,7 @@ type model struct {
 func initialModel() model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 
 	del := newDelegate()
 
@@ -417,11 +417,11 @@ func initialModel() model {
 func newDelegate() list.DefaultDelegate {
 	d := list.NewDefaultDelegate()
 	d.Styles.SelectedTitle = d.Styles.SelectedTitle.
-		Foreground(lipgloss.Color("#C0A0FF")).
-		BorderForeground(lipgloss.Color("#7D56F4"))
+		Foreground(lipgloss.Color("13")).
+		BorderForeground(lipgloss.Color("5"))
 	d.Styles.SelectedDesc = d.Styles.SelectedDesc.
-		Foreground(lipgloss.Color("#9B88FF")).
-		BorderForeground(lipgloss.Color("#7D56F4"))
+		Foreground(lipgloss.Color("5")).
+		BorderForeground(lipgloss.Color("5"))
 	return d
 }
 
