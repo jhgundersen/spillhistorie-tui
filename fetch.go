@@ -148,7 +148,7 @@ func parseDuration(s string) int {
 
 // ─── article reader ───────────────────────────────────────────────────────────
 
-func fetchArticle(articleURL string, width int) tea.Cmd {
+func fetchArticle(articleURL string) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := http.Get(articleURL)
 		if err != nil {
@@ -166,17 +166,10 @@ func fetchArticle(articleURL string, width int) tea.Cmd {
 			return errMsg{err}
 		}
 
-		contentWidth := width - 6
-		if contentWidth < 40 {
-			contentWidth = 40
-		}
-		if contentWidth > 120 {
-			contentWidth = 120
-		}
-
 		return articleFetchedMsg{
-			title:   parsed.Title,
-			content: renderHTML(parsed.Content, contentWidth),
+			title:    parsed.Title,
+			rawHTML:  parsed.Content,
+			imageURL: parsed.Image,
 		}
 	}
 }

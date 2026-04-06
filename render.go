@@ -77,9 +77,22 @@ var (
 // chafaPath is set at startup if chafa is found in PATH.
 var chafaPath string
 
+// imgDebugLog is opened when SPILLHISTORIE_DEBUG=1 is set.
+var imgDebugLog *os.File
+
 func init() {
 	if p, err := exec.LookPath("chafa"); err == nil {
 		chafaPath = p
+	}
+	if os.Getenv("SPILLHISTORIE_DEBUG") != "" {
+		imgDebugLog, _ = os.OpenFile("/tmp/spillhistorie-img.log",
+			os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	}
+}
+
+func imgLog(format string, args ...interface{}) {
+	if imgDebugLog != nil {
+		fmt.Fprintf(imgDebugLog, format+"\n", args...)
 	}
 }
 
@@ -194,13 +207,7 @@ func renderBlock(n *html.Node, buf *strings.Builder, width int) {
 		}
 
 	case "img":
-		src := elAttr(n, "src")
-		if src == "" {
-			src = elAttr(n, "data-src")
-		}
-		if src == "" {
-			src = elAttr(n, "data-lazy-src")
-		}
+		src := bestImgSrc(n)
 		alt := elAttr(n, "alt")
 		if rendered := renderImage(src, alt, width); rendered != "" {
 			buf.WriteString("\n" + rendered + "\n")
@@ -330,9 +337,39 @@ func inlineNode(n *html.Node, buf *strings.Builder) {
 
 // ─── image rendering ─────────────────────────────────────────────────────────
 
+// bestImgSrc returns the most useful src from an <img> node,
+// preferring real URLs over data: placeholders.
+func bestImgSrc(n *html.Node) string {
+	candidates := []string{
+		elAttr(n, "src"),
+		elAttr(n, "data-src"),
+		elAttr(n, "data-lazy-src"),
+		elAttr(n, "data-original"),
+	}
+	for _, s := range candidates {
+		s = strings.TrimSpace(s)
+		if s != "" && !strings.HasPrefix(s, "data:") {
+			return s
+		}
+	}
+	return ""
+}
+
+// normalizeImgURL fixes protocol-relative URLs.
+func normalizeImgURL(src string) string {
+	if strings.HasPrefix(src, "//") {
+		return "https:" + src
+	}
+	return src
+}
+
 func renderImage(src, alt string, width int) string {
+	src = normalizeImgURL(src)
+	imgLog("renderImage src=%q chafaPath=%q", src, chafaPath)
 	if src != "" && chafaPath != "" {
-		if out, err := chafaRender(src, alt, width); err == nil {
+		out, err := chafaRender(src, alt, width)
+		imgLog("chafaRender err=%v outLen=%d", err, len(out))
+		if err == nil && out != "" {
 			return out
 		}
 	}
@@ -350,7 +387,9 @@ func chafaRender(src, alt string, width int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 spillhistorie-tui/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; spillhistorie-tui/1.0)")
+	req.Header.Set("Accept", "image/*,*/*;q=0.8")
+	req.Header.Set("Referer", "https://spillhistorie.no/")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err

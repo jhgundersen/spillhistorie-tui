@@ -152,6 +152,7 @@ const (
 type player struct {
 	cmd      *exec.Cmd
 	status   playerStatus
+	audioURL string
 	title    string
 	series   string
 	done     chan struct{}
@@ -161,24 +162,27 @@ type player struct {
 
 func (p *player) isActive() bool { return p.status != playerStopped }
 
-func (p *player) play(audioURL, title, series string, duration float64) error {
+func (p *player) play(audioURL, title, series string, duration, startPos float64) error {
 	p.stop()
-	cmd := exec.Command("mpv",
-		"--no-video",
-		"--no-terminal",
-		"--quiet",
-		"--input-ipc-server="+mpvSock,
-		audioURL,
-	)
+	args := []string{
+		"--no-video", "--no-terminal", "--quiet",
+		"--input-ipc-server=" + mpvSock,
+	}
+	if startPos > 0 {
+		args = append(args, fmt.Sprintf("--start=%g", startPos))
+	}
+	args = append(args, audioURL)
+	cmd := exec.Command("mpv", args...)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	done := make(chan struct{})
 	p.cmd = cmd
+	p.audioURL = audioURL
 	p.title = title
 	p.series = series
 	p.duration = duration
-	p.pos = 0
+	p.pos = startPos
 	p.status = playerPlaying
 	p.done = done
 	go func() { cmd.Wait(); close(done) }()
@@ -225,7 +229,27 @@ func (p *player) togglePause() {
 	}()
 }
 
+// stop halts playback and saves position for later resuming.
 func (p *player) stop() {
+	if p.isActive() && p.pos > 10 && (p.duration <= 0 || p.pos < p.duration-30) {
+		saveResume(&resumeState{
+			AudioURL: p.audioURL,
+			Title:    p.title,
+			Series:   p.series,
+			Duration: p.duration,
+			Pos:      p.pos,
+		})
+	}
+	p.kill()
+}
+
+// finish marks the episode as completed and removes any resume state.
+func (p *player) finish() {
+	deleteResume()
+	p.kill()
+}
+
+func (p *player) kill() {
 	if p.cmd != nil && p.cmd.Process != nil {
 		p.cmd.Process.Kill()
 	}
@@ -238,11 +262,27 @@ func (p *player) stop() {
 	}
 	p.cmd = nil
 	p.status = playerStopped
+	p.audioURL = ""
 	p.title = ""
 	p.series = ""
 	p.pos = 0
 	p.duration = 0
 	os.Remove(mpvSock)
+}
+
+// seek sends a relative seek command to mpv (delta in seconds).
+func (p *player) seek(delta float64) {
+	if !p.isActive() {
+		return
+	}
+	go func() {
+		conn, err := net.DialTimeout("unix", mpvSock, 100*time.Millisecond)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(conn, "{\"command\":[\"seek\",%g,\"relative\"]}\n", delta)
+	}()
 }
 
 // queryMPVPos queries the mpv IPC socket for the current playback position.
@@ -276,7 +316,11 @@ func queryMPVPos() float64 {
 
 type rssFetchedMsg []article
 type podcastsFetchedMsg []podcastEpisode
-type articleFetchedMsg struct{ title, content string }
+type articleFetchedMsg struct {
+	title    string
+	rawHTML  string
+	imageURL string
+}
 type playerDoneMsg struct{}
 type playerPosMsg struct{ pos float64 }
 type errMsg struct{ err error }
@@ -284,19 +328,21 @@ type errMsg struct{ err error }
 // ─── model ────────────────────────────────────────────────────────────────────
 
 type model struct {
-	state           appState
-	tab             activeTab
-	articleList     list.Model
-	podcastList     list.Model
-	viewport        viewport.Model
-	spinner         spinner.Model
-	player          *player
-	err             error
-	width           int
-	height          int
-	podcastsLoaded  bool
-	podcastsLoading bool
-	currentArticle  article
+	state               appState
+	tab                 activeTab
+	articleList         list.Model
+	podcastList         list.Model
+	viewport            viewport.Model
+	spinner             spinner.Model
+	player              *player
+	err                 error
+	width               int
+	height              int
+	podcastsLoaded      bool
+	podcastsLoading     bool
+	currentArticle      article
+	currentHTML         string
+	currentArticleImage string
 }
 
 func initialModel() model {
@@ -339,7 +385,13 @@ func newDelegate() list.DefaultDelegate {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchRSS)
+	cmds := []tea.Cmd{m.spinner.Tick, fetchRSS}
+	if rs := loadResume(); rs != nil {
+		if err := m.player.play(rs.AudioURL, rs.Title, rs.Series, rs.Duration, rs.Pos); err == nil {
+			cmds = append(cmds, m.player.waitDone(), pollPlayerPos())
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // ─── update ───────────────────────────────────────────────────────────────────
@@ -400,11 +452,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if item, ok := m.articleList.SelectedItem().(article); ok {
 						m.currentArticle = item
 						m.state = stateArticleLoading
-						return m, tea.Batch(m.spinner.Tick, fetchArticle(item.link, m.width))
+						return m, tea.Batch(m.spinner.Tick, fetchArticle(item.link))
 					}
 				case tabPodcasts:
 					if item, ok := m.podcastList.SelectedItem().(podcastEpisode); ok {
-						if err := m.player.play(item.audioURL, item.title, item.series, float64(item.duration)); err != nil {
+						if err := m.player.play(item.audioURL, item.title, item.series, float64(item.duration), 0); err != nil {
 							m.err = err
 							m.state = stateError
 							return m, nil
@@ -418,6 +470,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ":
 			if m.player.isActive() {
 				m.player.togglePause()
+				return m, nil
+			}
+
+		case "]":
+			if m.player.isActive() {
+				m.player.seek(30)
+				m.player.pos = min(m.player.pos+30, m.player.duration)
+				return m, nil
+			}
+
+		case "[":
+			if m.player.isActive() {
+				m.player.seek(-10)
+				m.player.pos = max(m.player.pos-10, 0)
 				return m, nil
 			}
 
@@ -447,7 +513,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case articleFetchedMsg:
-		m.viewport.SetContent(msg.content)
+		m.currentHTML = msg.rawHTML
+		m.currentArticleImage = msg.imageURL
+		m.rebuildArticleContent()
 		m.viewport.GotoTop()
 		m.state = stateArticle
 		return m, nil
@@ -462,7 +530,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playerDoneMsg:
-		m.player.stop()
+		m.player.finish()
 		m.resize()
 		return m, nil
 
@@ -517,8 +585,29 @@ func (m *model) resize() {
 	if vpH < 5 {
 		vpH = 5
 	}
-	m.viewport.Width = m.width - h
+	newVPW := m.width - h
+	widthChanged := m.viewport.Width != newVPW
+	m.viewport.Width = newVPW
 	m.viewport.Height = vpH
+	if widthChanged && m.state == stateArticle && m.currentHTML != "" {
+		m.rebuildArticleContent()
+	}
+}
+
+// rebuildArticleContent re-renders stored HTML at current viewport width.
+func (m *model) rebuildArticleContent() {
+	var parts []string
+	if m.currentArticleImage != "" {
+		if img := renderImage(m.currentArticleImage, "", m.viewport.Width); img != "" {
+			parts = append(parts, img)
+		}
+	}
+	if m.currentHTML != "" {
+		parts = append(parts, renderHTML(m.currentHTML, m.viewport.Width))
+	}
+	if len(parts) > 0 {
+		m.viewport.SetContent(strings.Join(parts, "\n\n"))
+	}
 }
 
 // ─── view ─────────────────────────────────────────────────────────────────────
@@ -609,7 +698,7 @@ func (m model) playerBar() string {
 
 	posStr := fmtDuration(m.player.pos)
 	durStr := fmtDuration(m.player.duration)
-	controls := "  spc:⏸  x:■"
+	controls := "  [-10  ]+30  spc:⏸  x:■"
 	sep := " · "
 
 	// Measure fixed portions (rune widths, ASCII-only except icon which is 1 cell)
