@@ -25,10 +25,25 @@ import (
 var version = "dev"
 
 const (
-	rssURL  = "https://spillhistorie.no/feed/"
 	kofiURL = "https://ko-fi.com/joachimfroholt"
 	mpvSock = "/tmp/spillhistorie.sock"
 )
+
+type articleCategory struct {
+	name       string
+	categoryID int   // WP category ID, 0 = no filter
+	tagIDs     []int // WP tag IDs (OR filter), nil = no filter
+}
+
+var articleCategories = []articleCategory{
+	{name: "Framside"},
+	{name: "Nye spill", categoryID: 3},
+	{name: "Retro", categoryID: 4},
+	{name: "Indie", categoryID: 1044},
+	{name: "Inntrykk", categoryID: 1038},
+	{name: "Features", categoryID: 2892},
+	{name: "Quiz", tagIDs: []int{300, 6750}},
+}
 
 var podcastFeeds = []struct{ name, url string }{
 	{"Diskettkameratene", "https://feeds.transistor.fm/diskettkameratene"},
@@ -100,7 +115,7 @@ var (
 type appState int
 
 const (
-	stateRSSLoading appState = iota
+	stateArticlesLoading appState = iota
 	stateBrowse
 	stateArticleLoading
 	stateArticle
@@ -307,7 +322,7 @@ func (p *player) seek(delta float64) {
 
 // ─── messages ─────────────────────────────────────────────────────────────────
 
-type rssFetchedMsg []article
+type articlesFetchedMsg []article
 type podcastsFetchedMsg []podcastEpisode
 type articleFetchedMsg struct {
 	title      string
@@ -330,6 +345,8 @@ type errMsg struct{ err error }
 type model struct {
 	state               appState
 	tab                 activeTab
+	articleCategoryIdx  int
+	articlesLoading     bool
 	articleList         list.Model
 	podcastList         list.Model
 	viewport            viewport.Model
@@ -372,11 +389,12 @@ func initialModel() model {
 	pl.SetFilteringEnabled(true)
 
 	return model{
-		state:       stateRSSLoading,
-		spinner:     s,
-		articleList: al,
-		podcastList: pl,
-		player:      &player{},
+		state:           stateArticlesLoading,
+		articlesLoading: true,
+		spinner:         s,
+		articleList:     al,
+		podcastList:     pl,
+		player:          &player{},
 	}
 }
 
@@ -392,7 +410,7 @@ func newDelegate() list.DefaultDelegate {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, fetchRSS}
+	cmds := []tea.Cmd{m.spinner.Tick, fetchArticles(articleCategories[0])}
 	if rs := loadResume(); rs != nil {
 		if err := m.player.play(rs.AudioURL, rs.Title, rs.Series, rs.Duration, rs.Pos); err == nil {
 			cmds = append(cmds, m.player.waitDone(), pollPlayerPos())
@@ -431,6 +449,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				} else {
 					m.tab = tabArticles
+				}
+			}
+
+		case "h", "left":
+			if m.state == stateBrowse && m.tab == tabArticles && !m.articlesLoading {
+				if m.articleCategoryIdx > 0 {
+					m.articleCategoryIdx--
+					m.articlesLoading = true
+					return m, tea.Batch(m.spinner.Tick, fetchArticles(articleCategories[m.articleCategoryIdx]))
+				}
+			}
+
+		case "l", "right":
+			if m.state == stateBrowse && m.tab == tabArticles && !m.articlesLoading {
+				if m.articleCategoryIdx < len(articleCategories)-1 {
+					m.articleCategoryIdx++
+					m.articlesLoading = true
+					return m, tea.Batch(m.spinner.Tick, fetchArticles(articleCategories[m.articleCategoryIdx]))
 				}
 			}
 
@@ -515,12 +551,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-	case rssFetchedMsg:
+	case articlesFetchedMsg:
 		items := make([]list.Item, len(msg))
 		for i, a := range msg {
 			items[i] = a
 		}
 		m.articleList.SetItems(items)
+		m.articlesLoading = false
 		m.state = stateBrowse
 		return m, nil
 
@@ -664,8 +701,12 @@ func (m *model) resize() {
 	if m.player.isActive() {
 		playerH = 2 // 1 player line + 1 blank separator
 	}
-	// tab bar(1) + help(1) + separators/spacing(2) = 4
-	listH := m.height - v - 4 - playerH
+	// tab bar(1) + category bar(1 when on articles) + help(1) + separators/spacing(2) = 4 or 5
+	catBar := 0
+	if m.tab == tabArticles {
+		catBar = 1
+	}
+	listH := m.height - v - 4 - playerH - catBar
 	if listH < 5 {
 		listH = 5
 	}
@@ -743,7 +784,7 @@ func (m model) View() string {
 		return ""
 	}
 	switch m.state {
-	case stateRSSLoading:
+	case stateArticlesLoading:
 		return "\n\n  " + m.spinner.View() + " Laster Spillhistorie.no…\n\n"
 	case stateArticleLoading:
 		return "\n\n  " + m.spinner.View() + " Henter artikkel…\n\n"
@@ -765,20 +806,40 @@ func (m model) View() string {
 func (m model) browseView() string {
 	var body string
 	if m.tab == tabArticles {
-		body = m.articleList.View()
+		if m.articlesLoading {
+			body = "\n  " + m.spinner.View() + " Laster artikler…\n"
+		} else {
+			body = m.articleList.View()
+		}
 	} else if m.podcastsLoading {
 		body = "\n  " + m.spinner.View() + " Laster podcaster…\n"
 	} else {
 		body = m.podcastList.View()
 	}
 
-	footer := helpStyle.Render("tab: bytt visning  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
+	footer := helpStyle.Render("tab: bytt visning  ·  h/l: kategori  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
 
-	parts := []string{m.tabBar(), body, "", footer}
+	parts := []string{m.tabBar()}
+	if m.tab == tabArticles {
+		parts = append(parts, m.categoryBar())
+	}
+	parts = append(parts, body, "", footer)
 	if m.player.isActive() {
 		parts = append(parts, "", m.playerBar())
 	}
 	return docStyle.Render(strings.Join(parts, "\n"))
+}
+
+func (m model) categoryBar() string {
+	var tabs []string
+	for i, cat := range articleCategories {
+		if i == m.articleCategoryIdx {
+			tabs = append(tabs, activeTabStyle.Render(cat.name))
+		} else {
+			tabs = append(tabs, inactiveTabStyle.Render(cat.name))
+		}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
 
 func (m model) articleHeaderBar() string {

@@ -2,45 +2,89 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	readability "github.com/go-shiori/go-readability"
 	"github.com/mmcdole/gofeed"
 )
 
-// ─── articles RSS ─────────────────────────────────────────────────────────────
+// ─── articles JSON API ────────────────────────────────────────────────────────
 
-func fetchRSS() tea.Msg {
-	fp := gofeed.NewParser()
-	feed, err := fp.ParseURL(rssURL)
-	if err != nil {
-		return errMsg{err}
-	}
-	articles := make([]article, 0, len(feed.Items))
-	for _, item := range feed.Items {
-		author := ""
-		if item.Author != nil {
-			author = item.Author.Name
+const wpAPIBase = "https://www.spillhistorie.no/wp-json/wp/v2/posts"
+
+func fetchArticles(cat articleCategory) tea.Cmd {
+	return func() tea.Msg {
+		u := wpAPIBase + "?_embed=1&per_page=20"
+		if cat.categoryID > 0 {
+			u += fmt.Sprintf("&categories=%d", cat.categoryID)
 		}
-		published := ""
-		if item.PublishedParsed != nil {
-			published = item.PublishedParsed.Format("02 Jan 2006")
+		if len(cat.tagIDs) > 0 {
+			parts := make([]string, len(cat.tagIDs))
+			for i, id := range cat.tagIDs {
+				parts[i] = strconv.Itoa(id)
+			}
+			u += "&tags=" + strings.Join(parts, ",")
 		}
-		articles = append(articles, article{
-			title:      item.Title,
-			link:       item.Link,
-			author:     author,
-			published:  published,
-			categories: item.Categories,
-		})
+		resp, err := http.Get(u)
+		if err != nil {
+			return errMsg{err}
+		}
+		defer resp.Body.Close()
+
+		var posts []struct {
+			Link  string `json:"link"`
+			Date  string `json:"date"`
+			Title struct {
+				Rendered string `json:"rendered"`
+			} `json:"title"`
+			Embedded struct {
+				Author []struct {
+					Name string `json:"name"`
+				} `json:"author"`
+				Terms [][]struct {
+					Name string `json:"name"`
+				} `json:"wp:term"`
+			} `json:"_embedded"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&posts); err != nil {
+			return errMsg{err}
+		}
+
+		articles := make([]article, 0, len(posts))
+		for _, p := range posts {
+			author := ""
+			if len(p.Embedded.Author) > 0 {
+				author = p.Embedded.Author[0].Name
+			}
+			published := ""
+			if t, err := time.Parse("2006-01-02T15:04:05", p.Date); err == nil {
+				published = t.Format("02 Jan 2006")
+			}
+			var cats []string
+			if len(p.Embedded.Terms) > 0 {
+				for _, term := range p.Embedded.Terms[0] {
+					cats = append(cats, term.Name)
+				}
+			}
+			articles = append(articles, article{
+				title:      stripTags(p.Title.Rendered),
+				link:       p.Link,
+				author:     author,
+				published:  published,
+				categories: cats,
+			})
+		}
+		return articlesFetchedMsg(articles)
 	}
-	return rssFetchedMsg(articles)
 }
 
 // ─── podcast feeds ────────────────────────────────────────────────────────────
@@ -151,7 +195,7 @@ func parseDuration(s string) int {
 
 // ─── article reader ───────────────────────────────────────────────────────────
 
-// isQuizArticle returns true when the article's RSS categories indicate it is
+// isQuizArticle returns true when the article's categories indicate it is
 // a quiz (contains "quiz" or "fredagsquiz", case-insensitive).
 func isQuizArticle(categories []string) bool {
 	for _, c := range categories {

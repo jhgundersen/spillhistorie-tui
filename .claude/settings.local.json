@@ -51,7 +51,8 @@
       "Bash(make build:*)",
       "Bash(curl -fsSL \"https://spillhistorie.no/2026/04/03/langfredagsquiz-kjenner-du-disse-spillene/\")",
       "Bash(curl -fsSL \"https://spillhistorie.no/feed/\")",
-      "Bash(curl -fsSL \"https://spillhistorie.no/2026/04/03/amiga-en-flipperspillodysse-pinball-magic/\")"
+      "Bash(curl -fsSL \"https://spillhistorie.no/2026/04/03/amiga-en-flipperspillodysse-pinball-magic/\")",
+      "WebFetch(domain:www.spillhistorie.no)"
     ]
   }
 }
