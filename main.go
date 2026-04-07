@@ -48,6 +48,16 @@ var articleCategories = []articleCategory{
 var podcastFeeds = []struct{ name, url string }{
 	{"Diskettkameratene", "https://feeds.transistor.fm/diskettkameratene"},
 	{"cd SPILL", "https://feed.podbean.com/cdspill/feed.xml"},
+	{"Spæll", "https://feed.podbean.com/spaell/feed.xml"},
+	{"Pappskaller", "https://anchor.fm/s/10b427ba4/podcast/rss"},
+}
+
+var podcastCategories = []string{
+	"Alle",
+	"Diskettkameratene",
+	"cd SPILL",
+	"Spæll",
+	"Pappskaller",
 }
 
 // ─── styles ───────────────────────────────────────────────────────────────────
@@ -347,6 +357,8 @@ type model struct {
 	tab                 activeTab
 	articleCategoryIdx  int
 	articlesLoading     bool
+	podcastCategoryIdx  int
+	allEpisodes         []podcastEpisode
 	articleList         list.Model
 	podcastList         list.Model
 	viewport            viewport.Model
@@ -453,20 +465,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "h", "left":
-			if m.state == stateBrowse && m.tab == tabArticles && !m.articlesLoading {
-				if m.articleCategoryIdx > 0 {
+			if m.state == stateBrowse && !m.articlesLoading {
+				if m.tab == tabArticles && m.articleCategoryIdx > 0 {
 					m.articleCategoryIdx--
 					m.articlesLoading = true
 					return m, tea.Batch(m.spinner.Tick, fetchArticles(articleCategories[m.articleCategoryIdx]))
+				} else if m.tab == tabPodcasts && m.podcastsLoaded && m.podcastCategoryIdx > 0 {
+					m.podcastCategoryIdx--
+					m.podcastList.SetItems(m.filteredPodcastItems())
 				}
 			}
 
 		case "l", "right":
-			if m.state == stateBrowse && m.tab == tabArticles && !m.articlesLoading {
-				if m.articleCategoryIdx < len(articleCategories)-1 {
+			if m.state == stateBrowse && !m.articlesLoading {
+				if m.tab == tabArticles && m.articleCategoryIdx < len(articleCategories)-1 {
 					m.articleCategoryIdx++
 					m.articlesLoading = true
 					return m, tea.Batch(m.spinner.Tick, fetchArticles(articleCategories[m.articleCategoryIdx]))
+				} else if m.tab == tabPodcasts && m.podcastsLoaded && m.podcastCategoryIdx < len(podcastCategories)-1 {
+					m.podcastCategoryIdx++
+					m.podcastList.SetItems(m.filteredPodcastItems())
 				}
 			}
 
@@ -562,13 +580,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case podcastsFetchedMsg:
-		items := make([]list.Item, len(msg))
-		for i, e := range msg {
-			items[i] = e
-		}
-		m.podcastList.SetItems(items)
+		m.allEpisodes = []podcastEpisode(msg)
 		m.podcastsLoaded = true
 		m.podcastsLoading = false
+		m.podcastList.SetItems(m.filteredPodcastItems())
 		return m, nil
 
 	case articleFetchedMsg:
@@ -701,9 +716,9 @@ func (m *model) resize() {
 	if m.player.isActive() {
 		playerH = 2 // 1 player line + 1 blank separator
 	}
-	// tab bar(1) + category bar(1 when on articles) + help(1) + separators/spacing(2) = 4 or 5
+	// tab bar(1) + category bar(1 when applicable) + help(1) + separators/spacing(2) = 4 or 5
 	catBar := 0
-	if m.tab == tabArticles {
+	if m.tab == tabArticles || (m.tab == tabPodcasts && m.podcastsLoaded) {
 		catBar = 1
 	}
 	listH := m.height - v - 4 - playerH - catBar
@@ -822,6 +837,8 @@ func (m model) browseView() string {
 	parts := []string{m.tabBar()}
 	if m.tab == tabArticles {
 		parts = append(parts, m.categoryBar())
+	} else if m.tab == tabPodcasts && m.podcastsLoaded {
+		parts = append(parts, m.podcastCategoryBar())
 	}
 	parts = append(parts, body, "", footer)
 	if m.player.isActive() {
@@ -840,6 +857,29 @@ func (m model) categoryBar() string {
 		}
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+}
+
+func (m model) podcastCategoryBar() string {
+	var tabs []string
+	for i, name := range podcastCategories {
+		if i == m.podcastCategoryIdx {
+			tabs = append(tabs, activeTabStyle.Render(name))
+		} else {
+			tabs = append(tabs, inactiveTabStyle.Render(name))
+		}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+}
+
+func (m model) filteredPodcastItems() []list.Item {
+	cat := podcastCategories[m.podcastCategoryIdx]
+	var items []list.Item
+	for _, e := range m.allEpisodes {
+		if cat == "Alle" || e.series == cat {
+			items = append(items, e)
+		}
+	}
+	return items
 }
 
 func (m model) articleHeaderBar() string {
