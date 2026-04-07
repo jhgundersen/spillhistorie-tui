@@ -210,6 +210,17 @@ func (p *player) isActive() bool { return p.status != playerStopped }
 
 func (p *player) play(audioURL, title, series string, duration, startPos float64) error {
 	p.stop()
+
+	// Play from local cache if available; otherwise stream and cache in background.
+	playURL := audioURL
+	if path := podcastCachePath(audioURL); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			playURL = path
+		} else {
+			cacheEpisodeAsync(audioURL)
+		}
+	}
+
 	args := []string{
 		"--no-video", "--no-terminal", "--quiet",
 		"--input-ipc-server=" + mpvSock,
@@ -217,7 +228,7 @@ func (p *player) play(audioURL, title, series string, duration, startPos float64
 	if startPos > 0 {
 		args = append(args, fmt.Sprintf("--start=%g", startPos))
 	}
-	args = append(args, audioURL)
+	args = append(args, playURL)
 	cmd := exec.Command("mpv", args...)
 	if err := cmd.Start(); err != nil {
 		return err

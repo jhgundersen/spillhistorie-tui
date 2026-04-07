@@ -14,12 +14,70 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 	"golang.org/x/net/html"
 )
+
+const (
+	podcastCacheMaxBytes = 1 << 30        // 1 GB
+	imageCacheMaxBytes   = 100 << 20      // 100 MB
+)
+
+// pruneCache removes the oldest files in dir until the total size is under
+// maxBytes. Stale .tmp files (older than 1 hour) are always removed first.
+func pruneCache(dir string, maxBytes int64) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	type fileEntry struct {
+		path  string
+		size  int64
+		mtime int64 // unix timestamp for sorting
+	}
+
+	var files []fileEntry
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			if time.Since(info.ModTime()) > time.Hour {
+				os.Remove(path)
+			}
+			continue
+		}
+		files = append(files, fileEntry{path: path, size: info.Size(), mtime: info.ModTime().Unix()})
+		total += info.Size()
+	}
+
+	if total <= maxBytes {
+		return
+	}
+
+	// Oldest first.
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime < files[j].mtime })
+
+	for _, f := range files {
+		if total <= maxBytes {
+			break
+		}
+		os.Remove(f.path)
+		total -= f.size
+	}
+}
 
 // ─── render styles ────────────────────────────────────────────────────────────
 
@@ -531,12 +589,63 @@ func chafaRender(src, alt string, width, maxHeight int) (string, error) {
 	// Persist raw render to disk cache (without caption — alt may vary per call).
 	if cacheDir != "" {
 		_ = os.WriteFile(filepath.Join(cacheDir, cacheKey), []byte(result), 0o644)
+		pruneCache(cacheDir, imageCacheMaxBytes)
 	}
 
 	if alt != "" {
 		result += "\n" + captionStyle.Render("  "+alt)
 	}
 	return result, nil
+}
+
+// ─── podcast cache ────────────────────────────────────────────────────────────
+
+// podcastCachePath returns the path where an episode should be cached on disk.
+// Returns "" if the cache directory cannot be determined.
+func podcastCachePath(audioURL string) string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(base, "spillhistorie", "podcasts")
+	h := sha256.Sum256([]byte(audioURL))
+	return filepath.Join(dir, fmt.Sprintf("%x", h))
+}
+
+// cacheEpisodeAsync downloads audioURL to the podcast cache in a background
+// goroutine. It writes to a .tmp file first and renames atomically on success,
+// so a partially-downloaded file is never mistaken for a complete one.
+func cacheEpisodeAsync(audioURL string) {
+	go func() {
+		path := podcastCachePath(audioURL)
+		if path == "" {
+			return
+		}
+		if _, err := os.Stat(path); err == nil {
+			return // already cached
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return
+		}
+		tmp := path + ".tmp"
+		resp, err := http.Get(audioURL)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		f, err := os.Create(tmp)
+		if err != nil {
+			return
+		}
+		if _, err := io.Copy(f, resp.Body); err != nil {
+			f.Close()
+			os.Remove(tmp)
+			return
+		}
+		f.Close()
+		os.Rename(tmp, path)
+		pruneCache(filepath.Dir(path), podcastCacheMaxBytes)
+	}()
 }
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
