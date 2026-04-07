@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -99,15 +100,6 @@ var (
 			Background(lipgloss.Color("0")).
 			Foreground(lipgloss.Color("8"))
 
-	progressFilledStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("5"))
-
-	progressCursorStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("13"))
-
-	progressEmptyStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("8"))
-
 	kofiStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("9"))
 
@@ -183,15 +175,17 @@ const (
 )
 
 type player struct {
-	cmd      *exec.Cmd
-	status   playerStatus
-	audioURL string
-	title    string
-	series   string
-	done     chan struct{}
-	pos      float64 // protected by posSync; use getPos/setPos
-	posSync  sync.Mutex
-	duration float64 // seconds, from RSS
+	cmd        *exec.Cmd
+	status     playerStatus
+	audioURL   string
+	title      string
+	series     string
+	done       chan struct{}
+	pos        float64 // protected by posSync; use getPos/setPos
+	posSync    sync.Mutex
+	duration   float64 // seconds, from RSS
+	buffering  bool    // true until the first valid position is received
+	generation int     // incremented on each play(); used to discard stale messages
 }
 
 func (p *player) getPos() float64 {
@@ -234,6 +228,7 @@ func (p *player) play(audioURL, title, series string, duration, startPos float64
 		return err
 	}
 	done := make(chan struct{})
+	p.generation++
 	p.cmd = cmd
 	p.audioURL = audioURL
 	p.title = title
@@ -241,6 +236,7 @@ func (p *player) play(audioURL, title, series string, duration, startPos float64
 	p.duration = duration
 	p.setPos(startPos)
 	p.status = playerPlaying
+	p.buffering = true
 	p.done = done
 	go func() { cmd.Wait(); close(done) }()
 	return nil
@@ -248,10 +244,11 @@ func (p *player) play(audioURL, title, series string, duration, startPos float64
 
 func (p *player) waitDone() tea.Cmd {
 	done := p.done
+	gen := p.generation
 	if done == nil {
 		return nil
 	}
-	return func() tea.Msg { <-done; return playerDoneMsg{} }
+	return func() tea.Msg { <-done; return playerDoneMsg{generation: gen} }
 }
 
 func (p *player) togglePause() {
@@ -325,6 +322,7 @@ func (p *player) kill() {
 	p.series = ""
 	p.setPos(0)
 	p.duration = 0
+	p.buffering = false
 	os.Remove(mpvSock)
 }
 
@@ -365,8 +363,11 @@ type articleFetchedMsg struct {
 	images     []ImageRef // gallery images (regular articles)
 	inlineImgs []ImageRef // inline images (quiz/visual articles)
 }
-type playerDoneMsg struct{}
-type playerPosMsg struct{ pos float64 } // pos < 0 means query failed
+type playerDoneMsg struct{ generation int }
+type playerPosMsg struct {
+	pos        float64 // pos < 0 means query failed
+	generation int
+}
 type bodyImageFetchedMsg struct{ rendered string }
 type inlineImageLoadedMsg struct {
 	idx      int
@@ -389,6 +390,7 @@ type model struct {
 	viewport            viewport.Model
 	spinner             spinner.Model
 	player              *player
+	playerProgress      progress.Model
 	err                 error
 	width               int
 	height              int
@@ -423,6 +425,11 @@ func initialModel() model {
 	pl.SetShowStatusBar(true)
 	pl.SetFilteringEnabled(true)
 
+	prog := progress.New(
+		progress.WithGradient("#af00af", "#ff87ff"),
+		progress.WithoutPercentage(),
+	)
+
 	return model{
 		state:            stateArticlesLoading,
 		articlesLoading:  true,
@@ -431,6 +438,7 @@ func initialModel() model {
 		articleList:      al,
 		podcastList:      pl,
 		player:           &player{},
+		playerProgress:   prog,
 	}
 }
 
@@ -449,7 +457,7 @@ func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.spinner.Tick, fetchArticleList(articleCategories[0])}
 	if rs := loadResume(); rs != nil {
 		if err := m.player.play(rs.AudioURL, rs.Title, rs.Series, rs.Duration, rs.Pos); err == nil {
-			cmds = append(cmds, m.player.waitDone(), pollPlayerPos())
+			cmds = append(cmds, m.player.waitDone(), pollPlayerPos(m.player.generation))
 		}
 	}
 	return tea.Batch(cmds...)
@@ -569,7 +577,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return m, nil
 						}
 						m.resize()
-						return m, tea.Batch(m.player.waitDone(), pollPlayerPos())
+						return m, tea.Batch(m.player.waitDone(), pollPlayerPos(m.player.generation))
 					}
 				}
 			}
@@ -679,9 +687,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playerPosMsg:
-		if m.player.isActive() {
+		if m.player.isActive() && m.player.generation == msg.generation {
 			if msg.pos >= 0 {
 				m.player.setPos(msg.pos)
+				m.player.buffering = false
 			}
 			pos := m.player.getPos()
 			if pos > 10 && (m.player.duration <= 0 || pos < m.player.duration-30) {
@@ -693,7 +702,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Pos:      pos,
 				})
 			}
-			return m, pollPlayerPos()
+			return m, pollPlayerPos(m.player.generation)
 		}
 		return m, nil
 
@@ -702,11 +711,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playerDoneMsg:
-		if m.player.isActive() {
+		if m.player.isActive() && m.player.generation == msg.generation {
 			// Natural completion — episode played to end
 			m.player.finish()
 		}
-		// If already stopped (manually killed), don't touch the resume file
+		// Stale message (old episode) or already stopped — ignore
 		m.resize()
 		return m, nil
 
@@ -738,10 +747,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // pollPlayerPos waits one second, queries mpv for the current playback position,
 // and returns it in a playerPosMsg. Works on all platforms via a simple
 // request/response IPC call rather than a persistent event stream.
-func pollPlayerPos() tea.Cmd {
+func pollPlayerPos(gen int) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(time.Second)
-		return playerPosMsg{pos: queryMpvPos()}
+		return playerPosMsg{pos: queryMpvPos(), generation: gen}
 	}
 }
 
@@ -1123,7 +1132,6 @@ func (m model) playerBar() string {
 	}
 
 	title := clamp(m.player.title, titleW)
-	// Pad title to exact titleW so total width is predictable
 	titleRunes := utf8.RuneCountInString(title)
 	if titleRunes < titleW {
 		title += strings.Repeat(" ", titleW-titleRunes)
@@ -1133,54 +1141,33 @@ func (m model) playerBar() string {
 	if m.player.duration > 0 {
 		pct = pos / m.player.duration
 	}
-	bar := simpleBar(pct, barW)
+
+	var bar string
+	var barVisualW int
+	if m.player.buffering {
+		label := m.spinner.View() + " Laster…"
+		bar = label
+		barVisualW = barW // pad to same slot
+		labelW := lipgloss.Width(label)
+		if labelW < barW {
+			bar += strings.Repeat(" ", barW-labelW)
+		}
+	} else {
+		// Use a local copy so we can set width without mutating m.
+		prog := m.playerProgress
+		prog.Width = barW
+		bar = prog.ViewAs(pct)
+		barVisualW = barW
+	}
 
 	line := icon + " " + m.player.series + sep + title + " " + posStr + " " + bar + " " + durStr + controls
-	// Pad any remaining space
-	lineRunes := utf8.RuneCountInString(icon+" "+m.player.series+sep+title+" "+posStr+" "+bar+" "+durStr+controls)
-	if lineRunes < inner {
-		line += strings.Repeat(" ", inner-lineRunes)
+	// Use known widths (not RuneCountInString) since bar may contain ANSI codes.
+	knownW := fixedW + titleW + 1 + barVisualW + 1 // +1 title-pos space, +1 bar-dur space
+	if knownW < inner {
+		line += strings.Repeat(" ", inner-knownW)
 	}
 
 	return playerBGStyle.Render(line)
-}
-
-// simpleBar renders an ASCII progress bar using plain characters (safe width).
-func simpleBar(pct float64, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	pct = max(0.0, min(1.0, pct))
-	filled := int(pct * float64(width))
-	if filled > width {
-		filled = width
-	}
-	return strings.Repeat("=", filled) + strings.Repeat("-", width-filled)
-}
-
-// renderProgressBar renders a unicode progress bar at the given percentage.
-func renderProgressBar(pct float64, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	pct = max(0.0, min(1.0, pct))
-	filled := int(pct * float64(width))
-	rest := width - filled
-
-	var b strings.Builder
-	if filled > 0 {
-		b.WriteString(progressFilledStyle.Render(strings.Repeat("━", filled)))
-	}
-	if rest > 0 {
-		b.WriteString(progressCursorStyle.Render("╸"))
-		if rest > 1 {
-			b.WriteString(progressEmptyStyle.Render(strings.Repeat("─", rest-1)))
-		}
-	} else {
-		// At 100%, replace last char with a filled marker
-		b.WriteString(progressFilledStyle.Render("━"))
-	}
-	return b.String()
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
