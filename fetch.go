@@ -21,9 +21,14 @@ import (
 
 const wpAPIBase = "https://www.spillhistorie.no/wp-json/wp/v2/posts"
 
-func fetchArticles(cat articleCategory) tea.Cmd {
+// quizTagIDs are the WP tag IDs that mark quiz articles.
+var quizTagIDs = map[int]bool{300: true, 6750: true}
+
+// fetchArticleList is Phase 1: fast metadata-only fetch (~0.5s).
+// Returns titles, links, dates and tag IDs so the list can be shown immediately.
+func fetchArticleList(cat articleCategory) tea.Cmd {
 	return func() tea.Msg {
-		u := wpAPIBase + "?_embed=1&per_page=20"
+		u := wpAPIBase + "?_fields=id,link,date,title,tags&per_page=10"
 		if cat.categoryID > 0 {
 			u += fmt.Sprintf("&categories=%d", cat.categoryID)
 		}
@@ -41,19 +46,13 @@ func fetchArticles(cat articleCategory) tea.Cmd {
 		defer resp.Body.Close()
 
 		var posts []struct {
-			Link  string `json:"link"`
-			Date  string `json:"date"`
+			ID   int    `json:"id"`
+			Link string `json:"link"`
+			Date string `json:"date"`
+			Tags []int  `json:"tags"`
 			Title struct {
 				Rendered string `json:"rendered"`
 			} `json:"title"`
-			Embedded struct {
-				Author []struct {
-					Name string `json:"name"`
-				} `json:"author"`
-				Terms [][]struct {
-					Name string `json:"name"`
-				} `json:"wp:term"`
-			} `json:"_embedded"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&posts); err != nil {
 			return errMsg{err}
@@ -61,29 +60,71 @@ func fetchArticles(cat articleCategory) tea.Cmd {
 
 		articles := make([]article, 0, len(posts))
 		for _, p := range posts {
-			author := ""
-			if len(p.Embedded.Author) > 0 {
-				author = p.Embedded.Author[0].Name
-			}
 			published := ""
 			if t, err := time.Parse("2006-01-02T15:04:05", p.Date); err == nil {
 				published = t.Format("02 Jan 2006")
 			}
-			var cats []string
-			if len(p.Embedded.Terms) > 0 {
-				for _, term := range p.Embedded.Terms[0] {
-					cats = append(cats, term.Name)
-				}
-			}
 			articles = append(articles, article{
-				title:      stripTags(p.Title.Rendered),
-				link:       p.Link,
-				author:     author,
-				published:  published,
-				categories: cats,
+				id:        p.ID,
+				title:     stripTags(p.Title.Rendered),
+				link:      p.Link,
+				published: published,
+				tagIDs:    p.Tags,
 			})
 		}
 		return articlesFetchedMsg(articles)
+	}
+}
+
+// fetchArticleContent is Phase 2: background fetch of content + author + image.
+// Fires after the list is shown; pre-loads everything needed for instant article opens.
+func fetchArticleContent(categoryIdx int, ids []int) tea.Cmd {
+	return func() tea.Msg {
+		if len(ids) == 0 {
+			return nil
+		}
+		idStrs := make([]string, len(ids))
+		for i, id := range ids {
+			idStrs[i] = strconv.Itoa(id)
+		}
+		u := wpAPIBase + "?_fields=id,link,content,_links&_embed=author,wp:featuredmedia&per_page=10&include=" + strings.Join(idStrs, ",")
+		resp, err := http.Get(u)
+		if err != nil {
+			return nil // best-effort; list is already shown
+		}
+		defer resp.Body.Close()
+
+		var posts []struct {
+			ID   int    `json:"id"`
+			Link string `json:"link"`
+			Content struct {
+				Rendered string `json:"rendered"`
+			} `json:"content"`
+			Embedded struct {
+				Author []struct {
+					Name string `json:"name"`
+				} `json:"author"`
+				FeaturedMedia []struct {
+					SourceURL string `json:"source_url"`
+				} `json:"wp:featuredmedia"`
+			} `json:"_embedded"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&posts); err != nil {
+			return nil
+		}
+
+		byID := make(map[int]articleEnrichment, len(posts))
+		for _, p := range posts {
+			e := articleEnrichment{content: p.Content.Rendered}
+			if len(p.Embedded.Author) > 0 {
+				e.author = p.Embedded.Author[0].Name
+			}
+			if len(p.Embedded.FeaturedMedia) > 0 {
+				e.featuredImage = p.Embedded.FeaturedMedia[0].SourceURL
+			}
+			byID[p.ID] = e
+		}
+		return articlesContentMsg{categoryIdx: categoryIdx, byID: byID}
 	}
 }
 
@@ -195,12 +236,10 @@ func parseDuration(s string) int {
 
 // ─── article reader ───────────────────────────────────────────────────────────
 
-// isQuizArticle returns true when the article's categories indicate it is
-// a quiz (contains "quiz" or "fredagsquiz", case-insensitive).
-func isQuizArticle(categories []string) bool {
-	for _, c := range categories {
-		lc := strings.ToLower(c)
-		if lc == "quiz" || lc == "fredagsquiz" {
+// isQuizArticle returns true when the article has a quiz tag (IDs 300 or 6750).
+func isQuizArticle(tagIDs []int) bool {
+	for _, id := range tagIDs {
+		if quizTagIDs[id] {
 			return true
 		}
 	}
@@ -209,46 +248,51 @@ func isQuizArticle(categories []string) bool {
 
 func fetchArticle(a article) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := http.Get(a.link)
-		if err != nil {
-			return errMsg{err}
+		var rawHTML, heroImage string
+
+		if a.content != "" {
+			// Content already loaded from WP API — no HTTP fetch needed.
+			rawHTML = a.content
+			heroImage = a.featuredImage
+		} else {
+			// Fallback: fetch the page and extract with readability.
+			resp, err := http.Get(a.link)
+			if err != nil {
+				return errMsg{err}
+			}
+			defer resp.Body.Close()
+
+			parsedURL, err := url.ParseRequestURI(a.link)
+			if err != nil {
+				return errMsg{err}
+			}
+
+			pageBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return errMsg{err}
+			}
+
+			parsed, err := readability.FromReader(bytes.NewReader(pageBytes), parsedURL)
+			if err != nil {
+				return errMsg{err}
+			}
+			rawHTML = parsed.Content
+			heroImage = parsed.Image
 		}
-		defer resp.Body.Close()
 
-		parsedURL, err := url.ParseRequestURI(a.link)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		// Read the full page once so we can pass it to both readability
-		// and our image extractor. Readability may strip image-heavy blocks
-		// (e.g. gallery/quiz articles), so we extract images from the raw HTML.
-		pageBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		parsed, err := readability.FromReader(bytes.NewReader(pageBytes), parsedURL)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		contentImages := ExtractArticleImages(parsed.Content)
-
-		// Quiz articles (tagged "quiz" or "fredagsquiz" in RSS) show images
-		// inline at their natural positions. All other articles use the gallery.
+		// Quiz articles show images inline; all others use the gallery.
 		var images []ImageRef
 		var inlineImgs []ImageRef
-		if isQuizArticle(a.categories) {
-			inlineImgs = ExtractInlineImages(parsed.Content)
+		if isQuizArticle(a.tagIDs) {
+			inlineImgs = ExtractInlineImages(rawHTML)
 		} else {
-			images = contentImages
+			images = ExtractArticleImages(rawHTML)
 		}
 
 		return articleFetchedMsg{
-			title:      parsed.Title,
-			rawHTML:    parsed.Content,
-			imageURL:   parsed.Image,
+			title:      a.title,
+			rawHTML:    rawHTML,
+			imageURL:   heroImage,
 			images:     images,
 			inlineImgs: inlineImgs,
 		}

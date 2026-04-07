@@ -73,12 +73,6 @@ var (
 				Foreground(lipgloss.Color("8")).
 				Padding(0, 2)
 
-	listTitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("5")).
-			Padding(0, 1)
-
 	articleTitleStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("13")) // bright magenta
@@ -143,15 +137,23 @@ const (
 // ─── data types ───────────────────────────────────────────────────────────────
 
 type article struct {
-	title      string
-	link       string
-	author     string
-	published  string
-	categories []string
+	id            int
+	title         string
+	link          string
+	author        string
+	published     string
+	tagIDs        []int  // WP tag IDs (for quiz detection)
+	content       string // pre-loaded HTML from Phase 2
+	featuredImage string // pre-loaded from Phase 2
 }
 
-func (a article) Title() string       { return a.title }
-func (a article) Description() string { return a.author + "  ·  " + a.published }
+func (a article) Title() string { return a.title }
+func (a article) Description() string {
+	if a.author != "" {
+		return a.author + "  ·  " + a.published
+	}
+	return a.published
+}
 func (a article) FilterValue() string { return a.title + " " + a.author }
 
 type podcastEpisode struct {
@@ -333,6 +335,17 @@ func (p *player) seek(delta float64) {
 // ─── messages ─────────────────────────────────────────────────────────────────
 
 type articlesFetchedMsg []article
+
+type articleEnrichment struct {
+	author        string
+	content       string
+	featuredImage string
+}
+
+type articlesContentMsg struct {
+	categoryIdx int
+	byID        map[int]articleEnrichment
+}
 type podcastsFetchedMsg []podcastEpisode
 type articleFetchedMsg struct {
 	title      string
@@ -357,6 +370,7 @@ type model struct {
 	tab                 activeTab
 	articleCategoryIdx  int
 	articlesLoading     bool
+	articleListCache    map[int][]article
 	podcastCategoryIdx  int
 	allEpisodes         []podcastEpisode
 	articleList         list.Model
@@ -389,24 +403,23 @@ func initialModel() model {
 	del := newDelegate()
 
 	al := list.New([]list.Item{}, del, 0, 0)
-	al.Title = "Artikler"
-	al.Styles.Title = listTitleStyle
+	al.SetShowTitle(false)
 	al.SetShowStatusBar(true)
 	al.SetFilteringEnabled(true)
 
 	pl := list.New([]list.Item{}, del, 0, 0)
-	pl.Title = "Podkast"
-	pl.Styles.Title = listTitleStyle
+	pl.SetShowTitle(false)
 	pl.SetShowStatusBar(true)
 	pl.SetFilteringEnabled(true)
 
 	return model{
-		state:           stateArticlesLoading,
-		articlesLoading: true,
-		spinner:         s,
-		articleList:     al,
-		podcastList:     pl,
-		player:          &player{},
+		state:            stateArticlesLoading,
+		articlesLoading:  true,
+		articleListCache: make(map[int][]article),
+		spinner:          s,
+		articleList:      al,
+		podcastList:      pl,
+		player:           &player{},
 	}
 }
 
@@ -422,7 +435,7 @@ func newDelegate() list.DefaultDelegate {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, fetchArticles(articleCategories[0])}
+	cmds := []tea.Cmd{m.spinner.Tick, fetchArticleList(articleCategories[0])}
 	if rs := loadResume(); rs != nil {
 		if err := m.player.play(rs.AudioURL, rs.Title, rs.Series, rs.Duration, rs.Pos); err == nil {
 			cmds = append(cmds, m.player.waitDone(), pollPlayerPos())
@@ -467,9 +480,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "h", "left":
 			if m.state == stateBrowse && !m.articlesLoading {
 				if m.tab == tabArticles && m.articleCategoryIdx > 0 {
-					m.articleCategoryIdx--
-					m.articlesLoading = true
-					return m, tea.Batch(m.spinner.Tick, fetchArticles(articleCategories[m.articleCategoryIdx]))
+					if cmd := m.switchArticleCategory(m.articleCategoryIdx - 1); cmd != nil {
+						return m, cmd
+					}
 				} else if m.tab == tabPodcasts && m.podcastsLoaded && m.podcastCategoryIdx > 0 {
 					m.podcastCategoryIdx--
 					m.podcastList.SetItems(m.filteredPodcastItems())
@@ -479,13 +492,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l", "right":
 			if m.state == stateBrowse && !m.articlesLoading {
 				if m.tab == tabArticles && m.articleCategoryIdx < len(articleCategories)-1 {
-					m.articleCategoryIdx++
-					m.articlesLoading = true
-					return m, tea.Batch(m.spinner.Tick, fetchArticles(articleCategories[m.articleCategoryIdx]))
+					if cmd := m.switchArticleCategory(m.articleCategoryIdx + 1); cmd != nil {
+						return m, cmd
+					}
 				} else if m.tab == tabPodcasts && m.podcastsLoaded && m.podcastCategoryIdx < len(podcastCategories)-1 {
 					m.podcastCategoryIdx++
 					m.podcastList.SetItems(m.filteredPodcastItems())
 				}
+			}
+
+		case "r":
+			if m.state == stateBrowse && m.tab == tabArticles && !m.articlesLoading {
+				delete(m.articleListCache, m.articleCategoryIdx)
+				m.articlesLoading = true
+				return m, tea.Batch(m.spinner.Tick, fetchArticleList(articleCategories[m.articleCategoryIdx]))
 			}
 
 		case "g":
@@ -570,13 +590,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case articlesFetchedMsg:
-		items := make([]list.Item, len(msg))
-		for i, a := range msg {
+		articles := []article(msg)
+		m.articleListCache[m.articleCategoryIdx] = articles
+		items := make([]list.Item, len(articles))
+		for i, a := range articles {
 			items[i] = a
 		}
 		m.articleList.SetItems(items)
 		m.articlesLoading = false
 		m.state = stateBrowse
+		// Phase 2: background-fetch content + author + image
+		ids := make([]int, len(articles))
+		for i, a := range articles {
+			ids[i] = a.id
+		}
+		return m, fetchArticleContent(m.articleCategoryIdx, ids)
+
+	case articlesContentMsg:
+		cached, ok := m.articleListCache[msg.categoryIdx]
+		if !ok {
+			return m, nil
+		}
+		for i, a := range cached {
+			if e, ok := msg.byID[a.id]; ok {
+				cached[i].author = e.author
+				cached[i].content = e.content
+				cached[i].featuredImage = e.featuredImage
+			}
+		}
+		m.articleListCache[msg.categoryIdx] = cached
+		if m.articleCategoryIdx == msg.categoryIdx {
+			items := make([]list.Item, len(cached))
+			for i, a := range cached {
+				items[i] = a
+			}
+			m.articleList.SetItems(items)
+		}
 		return m, nil
 
 	case podcastsFetchedMsg:
@@ -832,7 +881,7 @@ func (m model) browseView() string {
 		body = m.podcastList.View()
 	}
 
-	footer := helpStyle.Render("tab: bytt visning  ·  h/l: kategori  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
+	footer := helpStyle.Render("tab: bytt visning  ·  h/l: kategori  ·  r: oppdater  ·  enter: åpne/spill  ·  /: søk  ·  q: avslutt")
 
 	parts := []string{m.tabBar()}
 	if m.tab == tabArticles {
@@ -869,6 +918,22 @@ func (m model) podcastCategoryBar() string {
 		}
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+}
+
+// switchArticleCategory updates articleCategoryIdx and either loads from cache
+// (instant) or triggers a network fetch. Returns the cmd to run (nil if cached).
+func (m *model) switchArticleCategory(idx int) tea.Cmd {
+	m.articleCategoryIdx = idx
+	if cached, ok := m.articleListCache[idx]; ok {
+		items := make([]list.Item, len(cached))
+		for i, a := range cached {
+			items[i] = a
+		}
+		m.articleList.SetItems(items)
+		return nil
+	}
+	m.articlesLoading = true
+	return tea.Batch(m.spinner.Tick, fetchArticleList(articleCategories[idx]))
 }
 
 func (m model) filteredPodcastItems() []list.Item {
