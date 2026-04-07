@@ -298,6 +298,13 @@ func (p *player) stop() {
 	p.kill()
 }
 
+// cancel stops playback and removes any resume state (explicit user stop via 'x').
+// Unlike stop(), it does not save the current position for later resuming.
+func (p *player) cancel() {
+	deleteResume()
+	p.kill()
+}
+
 // finish marks the episode as completed and removes any resume state.
 func (p *player) finish() {
 	deleteResume()
@@ -603,7 +610,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "x":
-			m.player.stop()
+			m.player.cancel()
 			m.resize()
 			return m, nil
 		}
