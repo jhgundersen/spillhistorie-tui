@@ -128,6 +128,69 @@ func fetchArticleContent(categoryIdx int, ids []int) tea.Cmd {
 	}
 }
 
+// ─── notices ─────────────────────────────────────────────────────────────────
+
+func fetchNotices() tea.Cmd {
+	return func() tea.Msg {
+		const u = "https://www.spillhistorie.no/wp-json/wp/v2/sh_notice" +
+			"?per_page=20&_fields=id,title,excerpt&orderby=date&order=desc"
+		resp, err := http.Get(u)
+		if err != nil {
+			return nil // non-critical
+		}
+		defer resp.Body.Close()
+
+		var posts []struct {
+			Title struct {
+				Rendered string `json:"rendered"`
+			} `json:"title"`
+			Excerpt struct {
+				Rendered string `json:"rendered"`
+			} `json:"excerpt"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&posts); err != nil {
+			return nil
+		}
+
+		notices := make([]notice, 0, len(posts))
+		for _, p := range posts {
+			notices = append(notices, notice{
+				title: stripTags(p.Title.Rendered),
+				body:  stripTags(p.Excerpt.Rendered),
+			})
+		}
+		return noticesFetchedMsg(notices)
+	}
+}
+
+func fetchChapters(chapterURL string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := http.Get(chapterURL)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+
+		var data struct {
+			Chapters []struct {
+				StartTime float64 `json:"startTime"`
+				Title     string  `json:"title"`
+			} `json:"chapters"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return nil
+		}
+
+		chapters := make([]chapter, 0, len(data.Chapters))
+		for _, c := range data.Chapters {
+			if c.Title != "" {
+				chapters = append(chapters, chapter{startTime: c.StartTime, title: c.Title})
+			}
+		}
+		return chaptersFetchedMsg(chapters)
+	}
+}
+
 // ─── podcast feeds ────────────────────────────────────────────────────────────
 
 // fetchPodcasts fetches all configured podcast RSS feeds in parallel and
@@ -203,6 +266,16 @@ func parsePodcastFeed(seriesName, feedURL string) ([]podcastEpisode, error) {
 			publishedUnix = item.PublishedParsed.Unix()
 		}
 
+		// Extract podcast:chapters URL if present.
+		chapterURL := ""
+		if podExt, ok := item.Extensions["podcast"]; ok {
+			if chapEls, ok := podExt["chapters"]; ok && len(chapEls) > 0 {
+				if u, ok := chapEls[0].Attrs["url"]; ok {
+					chapterURL = u
+				}
+			}
+		}
+
 		eps = append(eps, podcastEpisode{
 			title:         item.Title,
 			audioURL:      audioURL,
@@ -211,6 +284,7 @@ func parsePodcastFeed(seriesName, feedURL string) ([]podcastEpisode, error) {
 			author:        author,
 			published:     published,
 			publishedUnix: publishedUnix,
+			chapterURL:    chapterURL,
 		})
 	}
 	return eps, nil

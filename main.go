@@ -148,6 +148,16 @@ func (a article) Description() string {
 }
 func (a article) FilterValue() string { return a.title + " " + a.author }
 
+type notice struct {
+	title string
+	body  string
+}
+
+type chapter struct {
+	startTime float64
+	title     string
+}
+
 type podcastEpisode struct {
 	title         string
 	audioURL      string
@@ -156,6 +166,7 @@ type podcastEpisode struct {
 	author        string
 	published     string
 	publishedUnix int64
+	chapterURL    string // podcast:chapters JSON URL (empty if unavailable)
 }
 
 func (e podcastEpisode) Title() string { return e.title }
@@ -351,6 +362,9 @@ func (p *player) seek(delta float64) {
 // ─── messages ─────────────────────────────────────────────────────────────────
 
 type articlesFetchedMsg []article
+type noticesFetchedMsg []notice
+type noticeTickMsg struct{}
+type chaptersFetchedMsg []chapter
 
 type articleEnrichment struct {
 	author        string
@@ -390,6 +404,10 @@ type model struct {
 	articleCategoryIdx  int
 	articlesLoading     bool
 	articleListCache    map[int][]article
+	notices             []notice
+	noticeIdx           int
+	noticeCounter       int // 500 ms ticks since last advance
+	chapters            []chapter
 	podcastCategoryIdx  int
 	allEpisodes         []podcastEpisode
 	articleList         list.Model
@@ -461,7 +479,7 @@ func newDelegate() list.DefaultDelegate {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, fetchArticleList(articleCategories[0])}
+	cmds := []tea.Cmd{m.spinner.Tick, fetchArticleList(articleCategories[0]), fetchNotices()}
 	if rs := loadResume(); rs != nil {
 		if err := m.player.play(rs.AudioURL, rs.Title, rs.Series, rs.Duration, rs.Pos); err == nil {
 			cmds = append(cmds, m.player.waitDone(), pollPlayerPos(m.player.generation))
@@ -583,8 +601,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.state = stateError
 							return m, nil
 						}
+						m.chapters = nil
 						m.resize()
-						return m, tea.Batch(m.player.waitDone(), pollPlayerPos(m.player.generation))
+						cmds := []tea.Cmd{m.player.waitDone(), pollPlayerPos(m.player.generation)}
+						if item.chapterURL != "" {
+							cmds = append(cmds, fetchChapters(item.chapterURL))
+						}
+						return m, tea.Batch(cmds...)
 					}
 				}
 			}
@@ -726,6 +749,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 
+	case noticesFetchedMsg:
+		m.notices = []notice(msg)
+		m.resize()
+		return m, noticeTick()
+
+	case noticeTickMsg:
+		if len(m.notices) > 0 {
+			m.noticeCounter++
+			if m.noticeCounter >= 16 { // 16 × 500 ms = 8 s
+				m.noticeCounter = 0
+				m.noticeIdx = (m.noticeIdx + 1) % len(m.notices)
+			}
+		}
+		return m, noticeTick()
+
+	case chaptersFetchedMsg:
+		m.chapters = []chapter(msg)
+		m.resize()
+		return m, nil
+
 	case errMsg:
 		m.err = msg.err
 		m.state = stateError
@@ -790,14 +833,21 @@ func (m *model) resize() {
 	h, v := docStyle.GetFrameSize()
 	playerH := 0
 	if m.player.isActive() {
-		playerH = 2 // 1 player line + 1 blank separator
+		playerH = 2 // blank separator + player line
+		if len(m.chapters) > 0 {
+			playerH = 3 // + chapter line
+		}
 	}
-	// tab bar(1) + category bar(1 when applicable) + help(1) + separators/spacing(2) = 4 or 5
+	// tab bar(1) + category bar(1 when applicable) + notice bar(3 when loaded) + help(1) + spacing(2) = 4–8
 	catBar := 0
 	if m.tab == tabArticles || (m.tab == tabPodcasts && m.podcastsLoaded) {
 		catBar = 1
 	}
-	listH := m.height - v - 4 - playerH - catBar
+	noticeH := 0
+	if len(m.notices) > 0 {
+		noticeH = 3 // blank line + 2 notice lines
+	}
+	listH := m.height - v - 4 - playerH - catBar - noticeH
 	if listH < 5 {
 		listH = 5
 	}
@@ -916,11 +966,57 @@ func (m model) browseView() string {
 	} else if m.tab == tabPodcasts && m.podcastsLoaded {
 		parts = append(parts, m.podcastCategoryBar())
 	}
-	parts = append(parts, body, "", footer)
-	if m.player.isActive() {
-		parts = append(parts, "", m.playerBar())
+	parts = append(parts, body)
+	if nb := m.noticeBar(); nb != "" {
+		parts = append(parts, "", nb)
 	}
+	parts = append(parts, "", footer)
+	parts = append(parts, m.playerSection()...)
 	return docStyle.Render(strings.Join(parts, "\n"))
+}
+
+func (m model) currentChapterTitle() string {
+	if len(m.chapters) == 0 || !m.player.isActive() {
+		return ""
+	}
+	pos := m.player.getPos()
+	title := ""
+	for _, c := range m.chapters {
+		if c.startTime <= pos {
+			title = c.title
+		} else {
+			break
+		}
+	}
+	return title
+}
+
+// playerSection returns the lines to append for the player area (blank
+// separator + player bar + optional chapter line).
+func (m model) playerSection() []string {
+	if !m.player.isActive() {
+		return nil
+	}
+	lines := []string{"", m.playerBar()}
+	if chap := m.currentChapterTitle(); chap != "" {
+		lines = append(lines, metaStyle.Render("  "+chap))
+	}
+	return lines
+}
+
+func noticeTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return noticeTickMsg{}
+	})
+}
+
+func (m model) noticeBar() string {
+	if len(m.notices) == 0 {
+		return ""
+	}
+	w := m.width - 4
+	curr := m.notices[m.noticeIdx]
+	return clamp(curr.title, w) + "\n" + metaStyle.Render(clamp(curr.body, w))
 }
 
 func (m model) categoryBar() string {
@@ -991,9 +1087,7 @@ func (m model) articleView() string {
 		sep,
 		helpStyle.Render(m.articleHelpText()),
 	}
-	if m.player.isActive() {
-		lines = append(lines, "", m.playerBar())
-	}
+	lines = append(lines, m.playerSection()...)
 	return docStyle.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
