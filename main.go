@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"os"
 	"os/exec"
@@ -1300,7 +1301,7 @@ func fmtDuration(secs float64) string {
 	return fmt.Sprintf("%d:%02d", m, sec)
 }
 
-// stripTags removes HTML tags from a string.
+// stripTags removes HTML tags and decodes HTML entities from a string.
 func stripTags(s string) string {
 	var b strings.Builder
 	in := false
@@ -1314,7 +1315,7 @@ func stripTags(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return strings.TrimSpace(b.String())
+	return html.UnescapeString(strings.TrimSpace(b.String()))
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
